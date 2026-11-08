@@ -1,0 +1,10 @@
+xz-5.6.3 liblzma
+================
+
+Vendored unmodified from the xz-5.6.3 source release (tukaani-project/xz), for the
+raw LZMA1 encoder/decoder used by the UnityWeb bundle records.
+
+Only `src/liblzma` and `src/common` are included. The patcher build compiles them
+directly with MSVC (see `patcher/build.bat`); no CMake step is needed at build time.
+
+License: 0BSD (public domain equivalent). See `COPYING.0BSD` and `COPYING`.
