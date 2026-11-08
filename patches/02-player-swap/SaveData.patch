@@ -1,0 +1,12 @@
+﻿diff --git a/Assets/Scripts/Assembly-CSharp/SaveData.cs b/Assets/Scripts/Assembly-CSharp/SaveData.cs
+index 797b7c6..e8199b6 100644
+--- a/Assets/Scripts/Assembly-CSharp/SaveData.cs
++++ b/Assets/Scripts/Assembly-CSharp/SaveData.cs
+@@ -83,6 +83,7 @@ public class SaveData
+ 
+ 	private void Initialize()
+ 	{
++		Directory.CreateDirectory(DataPath);
+ 		mFullName = DataPath + "save.bin";
+ 	}
+ 
