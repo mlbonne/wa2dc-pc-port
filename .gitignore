@@ -1,0 +1,41 @@
+# --- Original game + supplied art (never redistribute) ---
+*.xapk
+*.apk
+*.obb
+/bg/
+# --- Derived binaries that must never be committed ---
+*.bin
+*.dll
+*.unity3d
+*.assets
+# --- Derived / extracted binaries & proprietary-derived source ---
+/work/
+/decomp/
+/assetripper-out/
+/unity-project/
+/build/
+/dist/
+/patcher/out/
+/scripts/__pycache__/
+# --- Unity editor junk (if a project is ever added) ---
+Library/
+Temp/
+Obj/
+Logs/
+UserSettings/
+*.csproj
+*.sln
+# --- OS / editor ---
+Thumbs.db
+.DS_Store
+.vs/
+
+# lead<->agent handoff markers
+agent-handoff/reports/*.DONE
+agent-handoff/reports/*.BLOCKED
+
+# kept local only (lead/agent handoff, notes, docs)
+agent-handoff/
+docs/
+tools-added/
+*.md
