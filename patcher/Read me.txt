@@ -1,0 +1,58 @@
+# WA2DC Patcher
+
+Turns your **WA2 Dream Communication 1.0.7 XAPK** into the complete Windows port.
+
+## You need
+
+- The WA2DC 1.0.7 XAPK you downloaded (the file that contains `jp.aquaplus.DreamCommunication.apk`
+  and the OBB).
+- About 500 MB of free space where the game should go, plus about 220 MB of temporary space on the
+  system drive while installing.
+
+## How to use
+
+1. Keep `WA2DC Patcher.exe` and `WA2DC_Patch.dat` together in one folder.
+2. Run `WA2DC Patcher.exe`, choose your XAPK, then the folder for the game.
+   - If the folder is not empty, a `WA2DC` subfolder is created inside it.
+   - The settings on the destination page let you install the bundled strip art (on by default) and
+     the 1920x1080 launcher.
+3. Press **Install**. Every file taken from your XAPK is checked against the CRC32 recorded in the data
+   file; the game files that the port modifies are applied as Windows deltas against your own copies,
+   and the 255 AssetBundles are decoded, patched and re-encoded with the same LZMA settings as the
+   Windows build.
+4. Start the game with `WA2DC.exe` (or **Play now** / the desktop shortcut button).
+
+Installing takes a few minutes (about 3.5 minutes on the test machine) because the bundles are
+re-encoded; the window shows the current file and the remaining time.
+
+`WA2DC.bat` starts the default 1024x768 window with `-force-opengl`; `WA2DC-1080p.bat` switches the
+saved display mode to 1920x1080 fullscreen. Unity's configuration dialog appears on launch: click
+**Play!**. **Alt+Enter** toggles fullscreen.
+
+Saves are in `<game folder>\Documents\` (`save.bin` and `share.bin`). The patcher never changes your
+XAPK, and it does not need Python, Unity, ilspycmd or a compiler.
+
+## If something goes wrong
+
+- A damaged or different-version XAPK is reported with the entry that failed its CRC; nothing is
+  written in that case.
+- Cancelling during the install removes the partial staging folder.
+- `WA2DC_Patch.dat` must stay next to `WA2DC Patcher.exe`.
+
+## Notes
+
+- Real-money store purchases are stubbed (the game's servers are offline); the paid DLC items the owner
+  owns are unlocked locally. All other game features work offline.
+- The default build is a 1024x768 window; the stock Unity 3.5.6 player does not support runtime
+  window resizing.
+- This is a personal preservation/interoperability build. Do not redistribute the game or the patcher
+  data file.
+
+## Silent mode (for testing)
+
+```
+WA2DC Patcher.exe /auto <xapk> <dest>
+```
+
+Installs without the wizard and writes `patcher-auto.txt` next to the exe (`OK` or the error).
+`WA2DC_CANCEL_MS=<ms>` in the environment simulates a cancel after that many milliseconds.
