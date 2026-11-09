@@ -176,10 +176,22 @@ try {
     # Saves-tab hook: version.dll proxy next to WA2DC.exe
     $hookSrc = Join-Path $work "dialoghook-src"
     Copy-Item (Join-Path $root "dialoghook") $hookSrc -Recurse -Force
-    $hookBuild = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "call `"$hookSrc\build.bat`"") -Wait -PassThru -WindowStyle Hidden
-    if ($hookBuild.ExitCode -ne 0) { throw "dialog hook build failed (exit $($hookBuild.ExitCode))" }
-    Assert-File (Join-Path $hookSrc "out\version.dll") "dialog hook version.dll"
-    Copy-Item (Join-Path $hookSrc "out\version.dll") (Join-Path $staging "version.dll") -Force
+    $hookDll = Join-Path $hookSrc "out\version.dll"
+    Remove-Item $hookDll -Force -ErrorAction SilentlyContinue
+    $hookProc = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "call `"$hookSrc\build.bat`"") -PassThru -WindowStyle Hidden
+    # cl.exe may leave vctip.exe (telemetry) alive; Start-Process -Wait then
+    # waits forever. Poll for the output DLL instead and clean the stragglers.
+    for ($hookWait = 0; $hookWait -lt 300; $hookWait++) {
+        Start-Sleep -Milliseconds 200
+        if (Test-Path $hookDll) { break }
+    }
+    Get-Process vctip -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if ($hookProc -and -not $hookProc.HasExited) {
+        Start-Sleep -Milliseconds 300
+        if (-not $hookProc.HasExited) { Stop-Process -Id $hookProc.Id -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not (Test-Path $hookDll)) { throw "dialog hook build produced no version.dll" }
+    Copy-Item $hookDll (Join-Path $staging "version.dll") -Force
     Write-Host "dialog hook: $((Get-Item (Join-Path $staging 'version.dll')).Length) bytes"
 
     Write-Step "4/9 Retag the base Data to Windows"
@@ -213,6 +225,11 @@ try {
     }
     Copy-Item (Join-Path $root "patches\03-launcher\WA2DC.bat") (Join-Path $staging "WA2DC.bat") -Force
     Copy-Item (Join-Path $root "patches\06-launcher\WA2DC-1080p.bat") (Join-Path $staging "WA2DC-1080p.bat") -Force
+
+    # Some 16-bit alpha textures live in hash-named serialized files or bundles,
+    # not only in sharedassets0/2/5; sweep the whole staged Data and fix every
+    # Android RGBA4444 texture that the Windows player would read as yellow.
+    Invoke-Python (Join-Path $root "scripts\fix_argb4444_order.py") @("--dir", $stagingData) "fix remaining 16-bit alpha textures"
 
     Write-Step "7/9 Export the project with AssetRipper"
     if (Test-Path $exportRoot) { Remove-Item $exportRoot -Recurse -Force }
@@ -286,6 +303,7 @@ try {
     }
     $verifyArgs = @("--build", $staging)
     if ($Background) { $verifyArgs += "--require-bg" }
+    Invoke-Python (Join-Path $root "scripts\sweep_argb4444.py") @("--build", $staging) "16-bit texture sweep"
     Invoke-Python (Join-Path $root "scripts\verify_build.py") $verifyArgs "verify build invariants"
 
     if (Test-Path $Output) { Remove-Item $Output -Recurse -Force }
