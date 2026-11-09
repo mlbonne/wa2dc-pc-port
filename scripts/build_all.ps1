@@ -148,6 +148,11 @@ try {
     Invoke-Unity @("-batchmode", "-quit", "-createProject", $stockProject, "-logFile", $stockLog) "create stock Unity project"
     New-Item -ItemType Directory -Force (Join-Path $stockProject "Assets\Editor") | Out-Null
     Copy-Item (Join-Path $root "scripts\unity\BuildEmpty.cs") (Join-Path $stockProject "Assets\Editor\BuildEmpty.cs") -Force
+    $apkIcon = Get-ChildItem (Join-Path $apkDir "res") -Recurse -Filter app_icon.png -File |
+        Sort-Object Length -Descending | Select-Object -First 1
+    if (-not $apkIcon) { throw "the APK has no res/**/app_icon.png for the player icon" }
+    Copy-Item $apkIcon.FullName (Join-Path $stockProject "Assets\app_icon.png") -Force
+    Write-Host "player icon: $($apkIcon.FullName) ($($apkIcon.Length) bytes)"
     $env:WA2DC_STOCK_PLAYER_OUT = Join-Path $stockPlayer "empty.exe"
     try {
         Invoke-Unity @("-batchmode", "-quit", "-projectPath", $stockProject, "-executeMethod", "BuildEmpty.Build", "-logFile", $stockLog) "build stock Windows player"
@@ -163,17 +168,23 @@ try {
     Copy-Item (Join-Path $stockPlayer "empty_Data") (Join-Path $staging "WA2DC_Data") -Recurse -Force
     $stagingData = Join-Path $staging "WA2DC_Data"
     Get-ChildItem $dataDir -File |
-        Where-Object { $_.Name -notin @("settings.xml", "unity default resources") } |
+        Where-Object { $_.Name -notin @("settings.xml", "unity default resources", "PlayerConnectionConfigFile") } |
         ForEach-Object { Copy-Item $_.FullName $stagingData -Force }
     Copy-Item (Join-Path $dataDir "Managed\System.Core.dll") (Join-Path $stagingData "Managed\System.Core.dll") -Force
     New-Item -ItemType Directory -Force (Join-Path $stagingData "StreamingAssets") | Out-Null
 
+    # Saves-tab hook: version.dll proxy next to WA2DC.exe
+    $hookSrc = Join-Path $work "dialoghook-src"
+    Copy-Item (Join-Path $root "dialoghook") $hookSrc -Recurse -Force
+    $hookBuild = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "call `"$hookSrc\build.bat`"") -Wait -PassThru -WindowStyle Hidden
+    if ($hookBuild.ExitCode -ne 0) { throw "dialog hook build failed (exit $($hookBuild.ExitCode))" }
+    Assert-File (Join-Path $hookSrc "out\version.dll") "dialog hook version.dll"
+    Copy-Item (Join-Path $hookSrc "out\version.dll") (Join-Path $staging "version.dll") -Force
+    Write-Host "dialog hook: $((Get-Item (Join-Path $staging 'version.dll')).Length) bytes"
+
     Write-Step "4/9 Retag the base Data to Windows"
     Invoke-Python (Join-Path $root "scripts\retag_serialized.py") @($stagingData, "--from", "13", "--to", "5", "--skip", "StreamingAssets", "--skip", "Mono", "--skip", "Resources") "retag base Data"
     Assert-NoAndroidTargets $stagingData 13 5
-    Copy-Item (Join-Path $dataDir "Managed\Assembly-CSharp.dll") (Join-Path $stagingData "Managed\Assembly-CSharp.dll.android.bak") -Force
-    Copy-Item (Join-Path $dataDir "Managed\Assembly-CSharp-firstpass.dll") (Join-Path $stagingData "Managed\Assembly-CSharp-firstpass.dll.android.bak") -Force
-    Copy-Item (Join-Path $stagingData "mainData") (Join-Path $stagingData "mainData.android.bak") -Force
 
     Write-Step "5/9 Apply the Data fixes"
     $companyOut = Join-Path $work "mainData.company"
@@ -259,14 +270,14 @@ try {
         -Source $srcFirst `
         -StockManaged (Join-Path $stockPlayer "empty_Data\Managed") `
         -SystemCore (Join-Path $dataDir "Managed\System.Core.dll") `
-        -Output $firstOut -Build $staging
+        -Output $firstOut -Build $staging -SkipApply
     if (-not (Test-Path $firstOut)) { throw "firstpass compile produced no DLL" }
     & (Join-Path $root "scripts\build_main.ps1") `
         -Source $srcMain `
         -StockManaged (Join-Path $stockPlayer "empty_Data\Managed") `
         -SystemCore (Join-Path $dataDir "Managed\System.Core.dll") `
         -Firstpass $firstOut `
-        -Output $mainOut -Build $staging
+        -Output $mainOut -Build $staging -SkipApply
     if (-not (Test-Path $mainOut)) { throw "main compile produced no DLL" }
 
     Write-Step "9/9 Verify and install the finished build"
