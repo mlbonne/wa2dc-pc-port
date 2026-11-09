@@ -26,9 +26,16 @@ public class PortInput : MonoBehaviour
         string request = Application.dataPath + "/../port-shot.request";
         if (File.Exists(request))
         {
-            File.Delete(request);
-            Application.CaptureScreenshot(Application.dataPath + "/../port-shot.png");
-            Debug.Log("PortInput: screenshot written to port-shot.png");
+            try
+            {
+                File.Delete(request);
+                Application.CaptureScreenshot(Application.dataPath + "/../port-shot.png");
+                Debug.Log("PortInput: screenshot written to port-shot.png");
+            }
+            catch (IOException)
+            {
+                // The test harness may be rewriting the request; retry next frame.
+            }
         }
         PVSelectController controller = UnityEngine.Object.FindObjectOfType(typeof(PVSelectController)) as PVSelectController;
         if (controller == null)
