@@ -5,7 +5,7 @@ Usage:
     python -I apply_background.py --source <...\\Assets\\Scripts\\Assembly-CSharp> \
         --patch patches\\03-background --input patches\\03-input
 
-- copies PortCurtainSkin.cs + PortInput.cs + PortWindow.cs into the source
+- copies PortCurtainSkin.cs + PortInput.cs into the source
 - removes the old PortBackground.cs if present
 - CoreData.Awake: replaces PortBackground.Ensure() with PortInput.Ensure()
 - DropCurtain.Initalize: appends PortCurtainSkin.Apply(this) so every rebuild
