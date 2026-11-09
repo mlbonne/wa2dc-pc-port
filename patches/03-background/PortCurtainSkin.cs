@@ -30,14 +30,9 @@ public static class PortCurtainSkin
     private static int s_SourceHeight;
     private static bool s_Loaded;
     private static bool s_Logged;
-    private static bool s_EnvLogged;
-    private static bool s_TexLogged;
-    private static bool s_TestPattern;
-    private static bool s_StripDump;
     private static Shader s_Shader;
     private static float s_OffsetX = float.NaN;
     private static float s_OffsetY = float.NaN;
-    private static bool s_QuadLogged;
     private static float s_RectTimer;
     private static int s_LastScreenWidth;
     private static int s_LastScreenHeight;
@@ -55,7 +50,6 @@ public static class PortCurtainSkin
         public int DesiredHeight;
         public int RequestGen;
         public bool Building;
-        public int BuildingGen;
         public Color32[] ReadyPixels;
         public string ReadyError;
         public int ReadyGen;
@@ -63,11 +57,6 @@ public static class PortCurtainSkin
         public int ReadyHeight;
         public int LastFailedGen = -1;
         public bool ErrorLogged;
-        public float LastMs;
-        public float LastScale;
-        public float LastKernel;
-        public int LastPotWidth;
-        public int LastPotHeight;
         public volatile bool ReadyFlag;
         public Transform Art;
         public Transform Curtain;
@@ -80,8 +69,6 @@ public static class PortCurtainSkin
         public float ScreenTop;
         public int LastScreenWidth;
         public int LastScreenHeight;
-        public Vector3 LastPosition;
-        public Vector3 LastTransformScale;
     }
 
     private sealed class BuildJob
@@ -99,8 +86,6 @@ public static class PortCurtainSkin
         public float SourceY0;
         public float SourceXScale;
         public float SourceYScale;
-        public bool TestPattern;
-        public float Ms;
     }
 
     private static readonly Side s_Left = new Side();
@@ -121,7 +106,6 @@ public static class PortCurtainSkin
         {
             return;
         }
-        DateTime mainStart = DateTime.UtcNow;
 
         Transform parent = curtain.transform;
         Transform art = parent.Find(ArtName);
@@ -191,36 +175,9 @@ public static class PortCurtainSkin
         side.ScreenBottom = screenBottom;
         side.LastScreenWidth = Screen.width;
         side.LastScreenHeight = Screen.height;
-        side.LastPosition = parent.position;
-        side.LastTransformScale = parent.lossyScale;
 
         int targetWidth = Mathf.Max(1, Mathf.RoundToInt(visibleWidth));
         int targetHeight = Mathf.Max(1, Mathf.RoundToInt(visibleHeight));
-
-        if (!s_EnvLogged)
-        {
-            s_EnvLogged = true;
-            Camera envCamera = FindCamera(parent);
-            string cameras = "";
-            Camera[] all = Camera.allCameras;
-            for (int i = 0; i < all.Length; i++)
-            {
-                Camera cam = all[i];
-                cameras += "[" + cam.name + " depth=" + cam.depth + " ortho=" + cam.orthographic +
-                    " rect=" + cam.rect.ToString() + " target=" + (cam.targetTexture != null) +
-                    " mask=" + cam.cullingMask + " px=" + cam.pixelWidth + "x" + cam.pixelHeight + "]";
-            }
-            Debug.Log("STRIPENV aa=" + QualitySettings.antiAliasing +
-                " quality=" + QualitySettings.GetQualityLevel() + "/" + QualitySettings.names.Length +
-                " aniso=" + QualitySettings.anisotropicFiltering +
-                " npot=" + NpotSupportText() +
-                " filter=Point screen=" + Screen.width + "x" + Screen.height +
-                " camRect=" + (envCamera != null ? envCamera.rect.ToString() : "-") +
-                " ortho=" + (envCamera != null ? envCamera.orthographic.ToString() : "-") +
-                " targetTex=" + (envCamera != null && envCamera.targetTexture != null) +
-                " gl=" + SystemInfo.graphicsDeviceVersion + " cams=" + cameras);
-        }
-
         if (side.DesiredWidth != targetWidth || side.DesiredHeight != targetHeight || side.RequestGen == 0)
         {
             side.DesiredWidth = targetWidth;
@@ -237,10 +194,8 @@ public static class PortCurtainSkin
         {
             s_Logged = true;
             Debug.Log("PortCurtainSkin: source=" + s_SourceWidth + "x" + s_SourceHeight
-                + " strip=" + targetWidth + "x" + targetHeight + " filter=Point pot=yes");
+                + " strip=" + targetWidth + "x" + targetHeight);
         }
-        Debug.Log("STRIPMAIN " + (left ? "L" : "R") + " " + targetWidth + "x" + targetHeight +
-            " ms=" + (DateTime.UtcNow - mainStart).TotalMilliseconds.ToString("F2"));
     }
 
     // Called once per frame by PortInput.Update: uploads finished worker
@@ -305,14 +260,8 @@ public static class PortCurtainSkin
             if (gen == side.RequestGen && width == side.DesiredWidth && height == side.DesiredHeight &&
                 side.Art != null)
             {
-                DateTime uploadStart = DateTime.UtcNow;
                 Upload(side, pixels, width, height);
                 ApplyToArt(side);
-                float uploadMs = (float)(DateTime.UtcNow - uploadStart).TotalMilliseconds;
-                // The debug dump (PNG encode) is outside the shipping upload cost.
-                Dump(side, pixels, width, height);
-                Debug.Log("STRIPUPLOAD " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
-                    " ms=" + uploadMs.ToString("F2"));
             }
         }
         MaybeStartBuild(side);
@@ -348,20 +297,15 @@ public static class PortCurtainSkin
         side.ScreenBottom = bottom;
         side.LastScreenWidth = Screen.width;
         side.LastScreenHeight = Screen.height;
-        side.LastPosition = side.Curtain.position;
-        side.LastTransformScale = side.Curtain.lossyScale;
         int width = Mathf.Max(1, Mathf.RoundToInt(visibleWidth));
         int height = Mathf.Max(1, Mathf.RoundToInt(visibleHeight));
-        bool resized = width != side.DesiredWidth || height != side.DesiredHeight;
-        if (resized)
+        if (width != side.DesiredWidth || height != side.DesiredHeight)
         {
             side.DesiredWidth = width;
             side.DesiredHeight = height;
             side.RequestGen++;
         }
         ApplyToArt(side);
-        Debug.Log("STRIPRECT " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
-            " screen=" + Screen.width + "x" + Screen.height + " resized=" + resized);
     }
 
     private static void MaybeStartBuild(Side side)
@@ -395,11 +339,9 @@ public static class PortCurtainSkin
         job.Source = s_Opaque;
         job.SourceWidth = s_SourceWidth;
         job.SourceHeight = s_SourceHeight;
-        job.TestPattern = s_TestPattern;
         ComputeCrop(job);
 
         side.Building = true;
-        side.BuildingGen = job.Gen;
         side.ErrorLogged = false;
         try
         {
@@ -469,7 +411,6 @@ public static class PortCurtainSkin
         Side side = job.Left ? s_Left : s_Right;
         try
         {
-            DateTime start = DateTime.UtcNow;
             Color32[] region = BuildPixels(job);
 
             // Pad to the POT size here, not on the main thread. The buffer is
@@ -487,7 +428,6 @@ public static class PortCurtainSkin
                 full = side.PotBuffer;
             }
             FillPot(full, region, job.Width, job.Height, job.PotWidth, job.PotHeight);
-            job.Ms = (float)(DateTime.UtcNow - start).TotalMilliseconds;
 
             lock (side)
             {
@@ -496,9 +436,6 @@ public static class PortCurtainSkin
                 side.ReadyWidth = job.Width;
                 side.ReadyHeight = job.Height;
                 side.ReadyError = null;
-                side.LastMs = job.Ms;
-                side.LastScale = 1f / job.SourceYScale;
-                side.LastKernel = Math.Max(1f, job.SourceYScale);
                 side.ReadyFlag = true;
             }
         }
@@ -539,33 +476,9 @@ public static class PortCurtainSkin
 
     private static Color32[] BuildPixels(BuildJob job)
     {
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_FAIL")))
-        {
-            // Debug-only fault injection for the worker exception-safety test.
-            throw new InvalidOperationException("WA2DC_STRIP_FAIL test exception");
-        }
         int width = job.Width;
         int height = job.Height;
         Color32[] target = new Color32[width * height];
-
-        if (job.TestPattern)
-        {
-            Color32 black = new Color32(0, 0, 0, 255);
-            Color32 white = new Color32(255, 255, 255, 255);
-            Color32 red = new Color32(255, 0, 0, 255);
-            Color32 green = new Color32(0, 255, 0, 255);
-            for (int ty = 0; ty < height; ty++)
-            {
-                for (int tx = 0; tx < width; tx++)
-                {
-                    bool border = tx == 0 || ty == 0 || tx == width - 1 || ty == height - 1;
-                    bool line = tx % 10 == 0 || ty % 10 == 0;
-                    bool light = ((tx + ty) & 1) == 0;
-                    target[ty * width + tx] = border ? green : (line ? red : (light ? white : black));
-                }
-            }
-            return target;
-        }
 
         int sourceWidth = job.SourceWidth;
         int sourceHeight = job.SourceHeight;
@@ -795,23 +708,6 @@ public static class PortCurtainSkin
         side.Texture.Apply(false);
         side.TexWidth = width;
         side.TexHeight = height;
-
-        if (!s_TexLogged)
-        {
-            s_TexLogged = true;
-            Debug.Log("STRIPTEX limit=" + QualitySettings.masterTextureLimit +
-                " tex=" + side.Texture.width + "x" + side.Texture.height +
-                " region=" + width + "x" + height +
-                " fmt=" + side.Texture.format +
-                " filter=" + side.Texture.filterMode +
-                " mips=" + side.Texture.mipmapCount +
-                " aniso=" + side.Texture.anisoLevel);
-        }
-        Debug.Log("STRIPBUILD " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
-            " pot=" + potWidth + "x" + potHeight +
-            " scale=" + side.LastScale.ToString("F3") +
-            " kernel=" + side.LastKernel.ToString("F2") +
-            " ms=" + side.LastMs.ToString("F1"));
     }
 
     private static void ApplyToArt(Side side)
@@ -860,16 +756,6 @@ public static class PortCurtainSkin
         Vector3 br = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(right, bottom, depth)));
         Vector3 tl = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(left, top, depth)));
         Vector3 tr = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(right, top, depth)));
-        if (!s_QuadLogged)
-        {
-            s_QuadLogged = true;
-            Debug.Log("STRIPQUAD " + (side.IsLeft ? "L" : "R") +
-                " rect=" + side.ScreenLeft.ToString("F3") + "," + side.ScreenBottom.ToString("F3") + "," +
-                side.ScreenRight.ToString("F3") + "," + side.ScreenTop.ToString("F3") +
-                " off=" + offsetX.ToString("F3") + "," + offsetY.ToString("F3") +
-                " screen=" + Screen.width + "x" + Screen.height +
-                " cam=" + camera.name + " px=" + camera.pixelWidth + "x" + camera.pixelHeight);
-        }
 
         Mesh mesh = side.Filter.sharedMesh;
         if (mesh == null || mesh.name != "Port Curtain Quad")
@@ -893,41 +779,6 @@ public static class PortCurtainSkin
         mesh.RecalculateNormals();
     }
 
-    private static void Dump(Side side, Color32[] full, int width, int height)
-    {
-        if (!s_StripDump || full == null || width <= 0 || height <= 0 || side.PotWidth <= 0)
-        {
-            return;
-        }
-        string dumpName = (side.IsLeft ? "left" : "right") + "-" + width + "x" + height + ".png";
-        try
-        {
-            Color32[] region = new Color32[width * height];
-            for (int y = 0; y < height; y++)
-            {
-                int from = y * side.PotWidth;
-                int to = y * width;
-                for (int x = 0; x < width; x++)
-                {
-                    region[to + x] = full[from + x];
-                }
-            }
-            Texture2D temp = new Texture2D(width, height, TextureFormat.RGB24, false);
-            temp.SetPixels32(region);
-            temp.Apply(false);
-            File.WriteAllBytes(Path.Combine(Path.Combine(Application.dataPath, ".."), dumpName),
-                temp.EncodeToPNG());
-            UnityEngine.Object.Destroy(temp);
-            Debug.Log("STRIPDUMP " + dumpName + " region=" + width + "x" + height +
-                " pot=" + side.PotWidth + "x" + side.PotHeight +
-                " filter=Point screen=" + Screen.width + "x" + Screen.height);
-        }
-        catch (Exception exception)
-        {
-            Debug.LogWarning("STRIPDUMP failed: " + exception);
-        }
-    }
-
     private static void GetPixelOffset(out float offsetX, out float offsetY)
     {
         if (float.IsNaN(s_OffsetX))
@@ -940,23 +791,6 @@ public static class PortCurtainSkin
         }
         offsetX = s_OffsetX;
         offsetY = s_OffsetY;
-    }
-
-    private static string NpotSupportText()
-    {
-        System.Reflection.PropertyInfo property = typeof(SystemInfo).GetProperty("npotSupport");
-        if (property == null)
-        {
-            return "n/a";
-        }
-        try
-        {
-            return property.GetValue(null, null).ToString();
-        }
-        catch (Exception)
-        {
-            return "unknown";
-        }
     }
 
     private static int NextPowerOfTwo(int value)
@@ -1084,8 +918,6 @@ public static class PortCurtainSkin
             return;
         }
         s_Loaded = true;
-        s_TestPattern = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_TEST"));
-        s_StripDump = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_DUMP"));
         string path = Path.Combine(Application.streamingAssetsPath, "bg.png");
         if (!File.Exists(path))
         {
