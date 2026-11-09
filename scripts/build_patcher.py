@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Build the WA2DC patcher data (WA2DC_Patch.dat) and exe.
+"""Build the WA2DC patcher (single exe with the patch data embedded).
 
 Usage:
     python -I build_patcher.py --build <build\\WA2DC> --xapk <game.xapk> \
         [--out "dist\\WA2DC Patcher"] [--patcher patcher] [--work work\\patcher] \
         [--background <bg.png>] [--music-intro <pcm>] [--music-loop <pcm>] [--skip-compile]
 
-The data file layout (little endian):
+The records are written to work/patcher/WA2DC_Patch.dat (intermediate), then embedded in the
+exe as two RCDATA resources: 101 = the data, 102 = its SHA-256. --out contains only
+WA2DC Patcher.exe and Read me.txt.
+
+The embedded data layout (little endian):
   'WA2DCPK1', u32 version (2), u32 record count, u64 index offset; data from offset 64;
   index at the end:
     u8 kind (1 shipped, 2 from XAPK, 3 patcher asset, 4 delta, 5 raw bundle delta)
@@ -30,6 +34,7 @@ vendored xz/liblzma using UnityPy's exact settings. See web_pair() below.
 """
 import argparse
 import ctypes
+import hashlib
 import lzma
 import os
 import shutil
@@ -373,7 +378,7 @@ def main():
     deltas = []           # (dest, target_size, delta_size, payload_size, kind)
     counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
 
-    with open(os.path.join(out_dir, "WA2DC_Patch.dat.tmp"), "wb") as dat:
+    with open(os.path.join(work, "WA2DC_Patch.dat.tmp"), "wb") as dat:
         dat.write(b"\0" * 64)
 
         def add_blob(kind, path, raw, crc):
@@ -480,12 +485,15 @@ def main():
         dat.seek(0)
         dat.write(MAGIC + struct.pack("<IIQ", 2, len(records), index_offset))
 
-    dat_path = os.path.join(out_dir, "WA2DC_Patch.dat")
-    os.replace(os.path.join(out_dir, "WA2DC_Patch.dat.tmp"), dat_path)
+    dat_path = os.path.join(work, "WA2DC_Patch.dat")
+    os.replace(os.path.join(work, "WA2DC_Patch.dat.tmp"), dat_path)
     dat_size = os.path.getsize(dat_path)
+    with open(dat_path, "rb") as handle:
+        dat_sha = hashlib.sha256(handle.read()).digest()
 
     print("\nrecords:", counts, "total", len(records))
-    print("data file: %s (%.1f MB)" % (dat_path, dat_size / 1e6))
+    print("data file: %s (%.1f MB, sha256 %s)" % (
+        dat_path, dat_size / 1e6, dat_sha.hex()))
     if deltas:
         deltas.sort(key=lambda d: d[2], reverse=True)
         print("largest deltas:")
@@ -509,6 +517,17 @@ def main():
         shutil.rmtree(src)
     shutil.copytree(os.path.abspath(args.patcher), src,
                     ignore=shutil.ignore_patterns("out", "*.ico", "*.obj", "*.res"))
+    # Embed the data and its SHA-256 as RCDATA resource 101/102.
+    shutil.copyfile(dat_path, os.path.join(src, "embed.dat"))
+    with open(os.path.join(src, "embed.sha256"), "wb") as handle:
+        handle.write(dat_sha)
+    with open(os.path.join(src, "patcher.rc"), "a", encoding="ascii", newline="\n") as handle:
+        handle.write('\n101 RCDATA "embed.dat"\n102 RCDATA "embed.sha256"\n')
+    # The output folder must never keep a separate data file.
+    for stale in ("WA2DC_Patch.dat", "WA2DC_Patch.dat.tmp", "patcher-auto.txt"):
+        stale_path = os.path.join(out_dir, stale)
+        if os.path.exists(stale_path):
+            os.remove(stale_path)
     if not write_icon(xapk.apk, os.path.join(src, "game.ico")):
         print("warning: no APK icon found; the exe will use the default icon")
     print("building patcher...")
