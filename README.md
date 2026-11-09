@@ -20,8 +20,10 @@ it can run on the desktop player of the same Unity version. The port is a **play
 3. **Retarget.** Every serialized file and every bundle records the platform it was built for. Each one
    is retagged from Android (13) to Windows standalone (5), so the PC player accepts it.
 4. **Data fixes.** A few assets are stored in formats the PC player reads differently:
-   - **16-bit UI textures** are stored with the alpha nibble in the opposite position. They're reordered
-     so transparent pixels no longer show as yellow squares.
+   - **16-bit alpha textures** are stored with the alpha nibble in the opposite position. They're
+     reordered so transparent pixels no longer show as yellow squares. This covers the base Data,
+     hash-named serialized files and bundles (the PV stage's yellow snowflake card was in a
+     hash-named file, not in `sharedassets`).
    - **ETC1 textures** (the loading-fade `black`/`white` and one face bundle) are converted to RGB24,
      because the PC player can't decode ETC1.
    - **Company and product name** in `PlayerSettings` are corrected, so Unity's asset cache resolves to a
@@ -32,7 +34,9 @@ it can run on the desktop player of the same Unity version. The port is a **play
    - **input:** the EZGUI menus use the mouse instead of touch;
    - **Android stubs:** the billing and OBB-download plugins are replaced with stubs;
    - **owned DLC:** the paid DLC items are marked as owned in the game's own store format;
-   - **side strips:** artwork is drawn in the letterbox strips, and a proper black loading fade is shown;
+   - **side strips:** drawn at exact screen pixels, so they stay sharp and the right way round at every
+     window size. A high-quality filter handles resizing, a larger `-Background` art is used
+     automatically, and a proper black loading fade is shown.
    - **save slots:** the save folder can be a slot under `Documents\Saves\`, chosen by the
      `WA2DC_SAVE_SLOT` environment variable or `-save-slot`. Without one, it's `Documents\` as before.
 6. **Saves tab.** Unity's configuration dialog is native code inside the player, so it isn't edited.
@@ -118,6 +122,7 @@ python -I scripts\build_patcher.py --build "build\WA2DC" --xapk "C:\path\to\game
 
 To check a build:
 - `scripts\verify_build.py` checks the data invariants;
+- `scripts\sweep_argb4444.py` fails if any 16-bit texture still has the Android nibble order;
 - `scripts\compare_builds.py` compares two builds file by file;
 - `scripts\playtest.ps1` drives the game through its main screens and takes screenshots;
 - `scripts\verify_raw_bundles.py` proves that the LZMA re-encode reproduces every bundle.
