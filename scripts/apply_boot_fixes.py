@@ -26,6 +26,63 @@ def insert_before(path, needle, insertion, marker):
     return True
 
 
+def patch_data_path(path):
+    """Resolve SaveData.DataPath from -save-slot or WA2DC_SAVE_SLOT, under Documents."""
+    with open(path, encoding="utf-8-sig") as handle:
+        text = handle.read()
+    if "WA2DC_SAVE_SLOT" in text:
+        return False
+    old = (
+        "\t\t\tstring dataPath = Application.dataPath;\n"
+        "\t\t\tstring text = dataPath.Substring(0, dataPath.LastIndexOf(\"/\"));\n"
+        "\t\t\treturn text + \"/Documents/\";"
+    )
+    new = (
+        "\t\t\tstring dataPath = Application.dataPath;\n"
+        "\t\t\tstring text = dataPath.Substring(0, dataPath.LastIndexOf(\"/\"));\n"
+        "\t\t\tstring root = text + \"/Documents/\";\n"
+        "\t\t\tstring slot = null;\n"
+        "\t\t\tstring[] args = Environment.GetCommandLineArgs();\n"
+        "\t\t\tfor (int i = 0; i < args.Length - 1; i++)\n"
+        "\t\t\t{\n"
+        "\t\t\t\tif (args[i] == \"-save-slot\")\n"
+        "\t\t\t\t{\n"
+        "\t\t\t\t\tslot = args[i + 1];\n"
+        "\t\t\t\t\tbreak;\n"
+        "\t\t\t\t}\n"
+        "\t\t\t}\n"
+        "\t\t\tif (string.IsNullOrEmpty(slot))\n"
+        "\t\t\t{\n"
+        "\t\t\t\tslot = Environment.GetEnvironmentVariable(\"WA2DC_SAVE_SLOT\");\n"
+        "\t\t\t}\n"
+        "\t\t\tif (string.IsNullOrEmpty(slot))\n"
+        "\t\t\t{\n"
+        "\t\t\t\treturn root;\n"
+        "\t\t\t}\n"
+        "\t\t\tstring full = Path.GetFullPath(Path.Combine(root, slot));\n"
+        "\t\t\tstring rootFull = Path.GetFullPath(root);\n"
+        "\t\t\tif (!rootFull.EndsWith(Path.DirectorySeparatorChar.ToString()))\n"
+        "\t\t\t{\n"
+        "\t\t\t\trootFull += Path.DirectorySeparatorChar;\n"
+        "\t\t\t}\n"
+        "\t\t\tif (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))\n"
+        "\t\t\t{\n"
+        "\t\t\t\tthrow new ArgumentException(\"save slot escapes Documents\");\n"
+        "\t\t\t}\n"
+        "\t\t\tif (!full.EndsWith(\"/\") && !full.EndsWith(\"\\\\\"))\n"
+        "\t\t\t{\n"
+        "\t\t\t\tfull += \"/\";\n"
+        "\t\t\t}\n"
+        "\t\t\treturn full;"
+    )
+    if old not in text:
+        raise SystemExit("SaveData.DataPath desktop getter not found")
+    text = text.replace(old, new, 1)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
@@ -44,6 +101,7 @@ def main():
         "\t\tDirectory.CreateDirectory(SaveData.DataPath);\n",
         "Directory.CreateDirectory",
     )
+    changed |= patch_data_path(save_data)
     print("boot fixes applied" if changed else "boot fixes already applied")
 
 
