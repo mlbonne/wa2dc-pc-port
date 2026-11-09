@@ -10,11 +10,15 @@ What you need
 - Your WA2DC 1.0.7 XAPK. This is the file that contains jp.aquaplus.DreamCommunication.apk and the
   OBB.
 - About 250 MB of free space for the game, plus about 220 MB of temporary space while it installs.
+- 64-bit Windows 8 or newer (tested on Windows 10).
+- A graphics driver with OpenGL, which any normal Intel, AMD or NVIDIA driver provides. A PC running
+  only Windows' "Basic Display Adapter" may not start the game.
 
 
 How to install
 --------------
-1. Keep "WA2DC Patcher.exe" and "WA2DC_Patch.dat" together in the same folder.
+1. Copy "WA2DC Patcher.exe" and your XAPK to the PC. The patch data is inside the exe, so nothing
+   else is needed: no Python, Unity, .NET, Visual C++ or DirectX package, and no internet.
 2. Run "WA2DC Patcher.exe", choose your XAPK, then choose the folder for the game.
    If that folder isn't empty, a WA2DC subfolder is created inside it.
    Options:
@@ -35,7 +39,7 @@ Your XAPK is only read, never changed. The game is rebuilt from it in four kinds
 - The 255 AssetBundles are unpacked, patched with a delta of a few hundred bytes, and re-compressed
   with the exact LZMA settings of the Windows build.
 - The Unity 3.5.6 Windows player, version.dll (the Saves tab), the launchers and the strip art
-  come from WA2DC_Patch.dat.
+  come from the patch data embedded in WA2DC Patcher.exe.
 
 Every result is checked against its target CRC32. The install is assembled in a temporary staging
 folder and moved into place only when everything has passed. The finished folder is byte-for-byte
@@ -63,7 +67,8 @@ If something goes wrong
 - A damaged or different XAPK stops the install with the name of the entry that failed. Nothing is
   written in that case.
 - Cancelling removes the temporary staging folder and leaves the destination as it was.
-- WA2DC_Patch.dat must be in the same folder as WA2DC Patcher.exe.
+- If WA2DC Patcher.exe was truncated or damaged in transit, the XAPK page says the embedded data is
+  damaged and Next stays disabled. Download the exe again.
 
 
 Silent install (for testing)
@@ -71,4 +76,5 @@ Silent install (for testing)
     "WA2DC Patcher.exe" /auto <xapk> <destination>
 
 This installs without the wizard. It writes patcher-auto.txt next to the exe (OK, or the error) and
-returns exit code 0 on success and 1 on failure.
+returns exit code 0 on success and 1 on failure. If the folder holding the exe is read-only, the log
+cannot be written; the exit code is still the authoritative result.
