@@ -49,17 +49,22 @@ it can run on the desktop player of the same Unity version. The port is a **play
 
 ## The patcher and its data
 
-`WA2DC Patcher.exe` is a standalone Windows installer. It needs no Python, Unity or compiler. Next to it,
-`WA2DC_Patch.dat` holds only what the XAPK doesn't have. Everything else is read straight out of your
-XAPK, from the APK and the OBB nested inside it.
+`WA2DC Patcher.exe` is a standalone Windows installer. It needs no Python, Unity or compiler, and the
+patch data is embedded inside it. Everything else is read straight out of your XAPK, from the APK and
+the OBB nested inside it.
+
+To install on another PC you only need the exe and the XAPK:
+- 64-bit Windows 8 or newer;
+- a graphics driver with OpenGL;
+- no .NET, Visual C++ or DirectX packages: the patcher, the game and Mono use only standard Windows DLLs.
 
 | Record | What it is | Where the bytes come from |
 |---|---|---|
-| shipped | the stock Unity player, `version.dll` (the Saves tab), the two launchers, the strip art | the `.dat` (LZMS-compressed) |
+| shipped | the stock Unity player, `version.dll` (the Saves tab), the two launchers, the strip art | the exe's embedded data (LZMS-compressed) |
 | from XAPK | unchanged game files | copied from your XAPK, CRC32-checked |
 | delta | retagged/fixed data files and the two recompiled assemblies | your XAPK's original plus a Windows `msdelta` delta |
 | bundle delta | the 255 AssetBundles | your XAPK's bundle, unpacked, patched, then re-encoded |
-| asset | the patcher's own art, icon and version info | the `.dat` |
+| asset | the patcher's own art, icon and version info | the exe's embedded data |
 
 **Bundles** are `UnityWeb` files: a header followed by one LZMA stream. Retagging a bundle changes only a
 handful of bytes inside the decompressed payload, but every byte of the compressed stream. So the patcher
