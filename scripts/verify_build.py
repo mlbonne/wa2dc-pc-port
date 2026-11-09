@@ -6,7 +6,8 @@ Usage:
 
 Checks the exe/Data layout, the patched PlayerSettings, the channelfixed UI
 textures, the RGB24 black/white fade textures, the converted face bundle and
-the launchers. Exits non-zero with a list of failures.
+the launchers, and rejects the old Android backups, PlayerConnectionConfigFile
+and other strays. Exits non-zero with a list of failures.
 """
 import argparse
 import os
@@ -62,6 +63,7 @@ def main():
 
     for relative in (
         "WA2DC.exe",
+        "version.dll",
         "WA2DC.bat",
         "WA2DC-1080p.bat",
         "WA2DC_Data/mainData",
@@ -72,6 +74,13 @@ def main():
         "WA2DC_Data/Managed/Assembly-CSharp-firstpass.dll",
     ):
         check(os.path.isfile(os.path.join(build, relative)), "missing " + relative)
+    for stray in (
+        "WA2DC_Data/mainData.android.bak",
+        "WA2DC_Data/Managed/Assembly-CSharp.dll.android.bak",
+        "WA2DC_Data/Managed/Assembly-CSharp-firstpass.dll.android.bak",
+        "WA2DC_Data/PlayerConnectionConfigFile",
+    ):
+        check(not os.path.exists(os.path.join(build, stray)), "stray file present: " + stray)
     if FAILS:
         return report()
 
