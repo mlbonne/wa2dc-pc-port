@@ -1,58 +1,74 @@
-# WA2DC Patcher
+WA2 Dream Communication for Windows - Patcher
+==============================================
 
-Turns your **WA2 Dream Communication 1.0.7 XAPK** into the complete Windows port.
+This patcher turns the Android XAPK of WHITE ALBUM2 ～ドリームコミュニケーション～ (version 1.0.7)
+into the complete Windows game.
 
-## You need
 
-- The WA2DC 1.0.7 XAPK you downloaded (the file that contains `jp.aquaplus.DreamCommunication.apk`
-  and the OBB).
-- About 500 MB of free space where the game should go, plus about 220 MB of temporary space on the
-  system drive while installing.
+What you need
+-------------
+- Your WA2DC 1.0.7 XAPK. This is the file that contains jp.aquaplus.DreamCommunication.apk and the
+  OBB.
+- About 250 MB of free space for the game, plus about 220 MB of temporary space while it installs.
 
-## How to use
 
-1. Keep `WA2DC Patcher.exe` and `WA2DC_Patch.dat` together in one folder.
-2. Run `WA2DC Patcher.exe`, choose your XAPK, then the folder for the game.
-   - If the folder is not empty, a `WA2DC` subfolder is created inside it.
-   - The settings on the destination page let you install the bundled strip art (on by default) and
-     the 1920x1080 launcher.
-3. Press **Install**. Every file taken from your XAPK is checked against the CRC32 recorded in the data
-   file; the game files that the port modifies are applied as Windows deltas against your own copies,
-   and the 255 AssetBundles are decoded, patched and re-encoded with the same LZMA settings as the
-   Windows build.
-4. Start the game with `WA2DC.exe` (or **Play now** / the desktop shortcut button).
+How to install
+--------------
+1. Keep "WA2DC Patcher.exe" and "WA2DC_Patch.dat" together in the same folder.
+2. Run "WA2DC Patcher.exe", choose your XAPK, then choose the folder for the game.
+   If that folder isn't empty, a WA2DC subfolder is created inside it.
+   Options:
+   - Use the bundled strip art: the artwork shown in the side strips (on by default).
+   - Create the 1920x1080 launcher.
+3. Press Install. It takes a few minutes. The window shows the current file and the time left.
+4. Press Play now, or create a desktop shortcut.
 
-Installing takes a few minutes (about 3.5 minutes on the test machine) because the bundles are
-re-encoded; the window shows the current file and the remaining time.
 
-`WA2DC.bat` starts the default 1024x768 window with `-force-opengl`; `WA2DC-1080p.bat` switches the
-saved display mode to 1920x1080 fullscreen. Unity's configuration dialog appears on launch: click
-**Play!**. **Alt+Enter** toggles fullscreen.
+What the patcher does with your data
+------------------------------------
+Your XAPK is only read, never changed. The game is rebuilt from it in four kinds of steps:
 
-Saves are in `<game folder>\Documents\` (`save.bin` and `share.bin`). The patcher never changes your
-XAPK, and it does not need Python, Unity, ilspycmd or a compiler.
+- Unchanged game files are copied out of the XAPK (from the APK and the OBB inside it). Each one is
+  checked against its recorded CRC32.
+- Game files the port changes are rebuilt from your own copy with a small Windows delta (msdelta).
+  These are the retargeted data files, the texture fixes and the two recompiled game assemblies.
+- The 255 AssetBundles are unpacked, patched with a delta of a few hundred bytes, and re-compressed
+  with the exact LZMA settings of the Windows build.
+- The Unity 3.5.6 Windows player, version.dll (the Saves tab), the launchers and the strip art
+  come from WA2DC_Patch.dat.
 
-## If something goes wrong
+Every result is checked against its target CRC32. The install is assembled in a temporary staging
+folder and moved into place only when everything has passed. The finished folder is byte-for-byte
+the same as the reference Windows build.
 
-- A damaged or different-version XAPK is reported with the entry that failed its CRC; nothing is
+
+Playing
+-------
+- WA2DC.bat starts the game in a 1024x768 window.
+- WA2DC-1080p.bat switches to 1920x1080 fullscreen.
+- Unity's configuration dialog appears first. The Graphics tab sets the resolution and window mode.
+  The Saves tab lists your saves with the WP left in each and when it was last played; pick one, or
+  pick New save to start without progress. Then click Play!.
+- Alt+Enter toggles fullscreen.
+- Saves are in the Documents folder inside the game folder. save.bin holds your progress and
+  share.bin holds the store and DLC state. Save 1 is Documents itself; each new save gets its own
+  folder in Documents\Saves. The owned DLC is unlocked in every save, new ones included.
+- The store's real-money purchases are offline. The owned DLC is already unlocked, and gallery pages
+  unlock with WP as in the original.
+- The window can't be resized while the game runs. Use Alt+Enter or the 1080p launcher instead.
+
+
+If something goes wrong
+-----------------------
+- A damaged or different XAPK stops the install with the name of the entry that failed. Nothing is
   written in that case.
-- Cancelling during the install removes the partial staging folder.
-- `WA2DC_Patch.dat` must stay next to `WA2DC Patcher.exe`.
+- Cancelling removes the temporary staging folder and leaves the destination as it was.
+- WA2DC_Patch.dat must be in the same folder as WA2DC Patcher.exe.
 
-## Notes
 
-- Real-money store purchases are stubbed (the game's servers are offline); the paid DLC items the owner
-  owns are unlocked locally. All other game features work offline.
-- The default build is a 1024x768 window; the stock Unity 3.5.6 player does not support runtime
-  window resizing.
-- This is a personal preservation/interoperability build. Do not redistribute the game or the patcher
-  data file.
+Silent install (for testing)
+----------------------------
+    "WA2DC Patcher.exe" /auto <xapk> <destination>
 
-## Silent mode (for testing)
-
-```
-WA2DC Patcher.exe /auto <xapk> <dest>
-```
-
-Installs without the wizard and writes `patcher-auto.txt` next to the exe (`OK` or the error).
-`WA2DC_CANCEL_MS=<ms>` in the environment simulates a cancel after that many milliseconds.
+This installs without the wizard. It writes patcher-auto.txt next to the exe (OK, or the error) and
+returns exit code 0 on success and 1 on failure.
