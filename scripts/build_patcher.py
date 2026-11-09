@@ -326,11 +326,6 @@ def source_for(rel, xapk):
         if name == "bg.png":
             return None
         return (2, name)
-    if rel == "WA2DC_Data/mainData.android.bak":
-        return (1, "assets/bin/Data/mainData")
-    if rel.startswith("WA2DC_Data/Managed/") and rel.endswith(".android.bak"):
-        base = rel[len("WA2DC_Data/Managed/"):-len(".android.bak")]
-        return (1, "assets/bin/Data/Managed/" + base)
     if rel.startswith("WA2DC_Data/"):
         sub = rel[len("WA2DC_Data/"):]
         return (1, "assets/bin/Data/" + sub)
