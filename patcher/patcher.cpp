@@ -6,8 +6,9 @@
 //
 // Files taken unchanged from the XAPK are copied out of the nested APK/OBB zips after a
 // CRC32 check. Modified files ship as Windows msdelta deltas against the user's own
-// copies (CreateDeltaB at build time, ApplyDeltaB here). The shipped player files and
-// launchers live in WA2DC_Patch.dat (see scripts/build_patcher.py for its layout).
+// copies (CreateDeltaB at build time, ApplyDeltaB here). The shipped player files,
+// launchers and patches are embedded in this executable as RCDATA resources (see
+// scripts/build_patcher.py), so there is no separate .dat file.
 //
 // UI: borderless GDI+ wizard, WHITE ALBUM2 Dream Communication strip art, falling snow,
 // and an optional soundtrack with a mute toggle.
@@ -27,6 +28,7 @@
 #include <compressapi.h>
 #include <msdelta.h>
 #include <mmsystem.h>
+#include <bcrypt.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,12 +42,17 @@
 #include "third_party/miniz/miniz.h"
 #include "bundle_lzma.h"
 
+#pragma comment(lib, "bcrypt.lib")
+
 using namespace Gdiplus;
 using std::wstring;
 using std::string;
 using std::vector;
 
-static const wchar_t* kDataName = L"WA2DC_Patch.dat";
+// Resource IDs written by scripts/build_patcher.py.
+#define IDR_PATCH_DATA 101
+#define IDR_PATCH_SHA  102
+
 static const wchar_t* kExeName = L"WA2DC.exe";
 static const wchar_t* kTitle = L"WA2DC Patcher";
 
@@ -92,14 +99,6 @@ static wstring FormatSize(uint64_t b)
     else if (b >= (1ull << 20)) swprintf_s(buf, L"%.0f MB", b / 1048576.0);
     else swprintf_s(buf, L"%.0f KB", b / 1024.0);
     return buf;
-}
-
-static bool ReadAt(HANDLE f, uint64_t off, void* buf, DWORD n)
-{
-    LARGE_INTEGER li; li.QuadPart = (LONGLONG)off;
-    if (!SetFilePointerEx(f, li, NULL, FILE_BEGIN)) return false;
-    DWORD rd = 0;
-    return ReadFile(f, buf, n, &rd, NULL) && rd == n;
 }
 
 static bool WriteFileAll(HANDLE f, const void* d, DWORD n)
@@ -474,10 +473,34 @@ struct Record {
     vector<RawChunk> chunks;
 };
 
-static HANDLE g_dat = INVALID_HANDLE_VALUE;
+static const uint8_t* g_data = NULL;
+static DWORD g_dataSize = 0;
 static vector<Record> g_records;
 static wstring g_exeDir;
 static Xapk g_xapk;
+
+static bool Sha256(const uint8_t* data, DWORD size, uint8_t out[32])
+{
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    bool ok = false;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0) {
+        if (BCryptCreateHash(alg, &hash, NULL, 0, NULL, 0, 0) == 0) {
+            ok = BCryptHashData(hash, (PUCHAR)data, size, 0) == 0 &&
+                 BCryptFinishHash(hash, out, 32, 0) == 0;
+            BCryptDestroyHash(hash);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+    }
+    return ok;
+}
+
+static bool ReadDat(uint64_t off, void* buf, DWORD n)
+{
+    if (!g_data || off > g_dataSize || (uint64_t)n > (uint64_t)g_dataSize - off) return false;
+    memcpy(buf, g_data + off, n);
+    return true;
+}
 
 static bool ReadStr(const uint8_t*& p, const uint8_t* end, wstring& out)
 {
@@ -491,19 +514,33 @@ static bool ReadStr(const uint8_t*& p, const uint8_t* end, wstring& out)
 
 static bool LoadData()
 {
-    wstring path = g_exeDir + L"\\" + kDataName;
-    g_dat = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (g_dat == INVALID_HANDLE_VALUE) return false;
-    uint8_t hdr[24];
-    if (!ReadAt(g_dat, 0, hdr, 24) || memcmp(hdr, "WA2DCPK1", 8)) return false;
-    uint32_t count = *(const uint32_t*)(hdr + 12);
-    uint64_t idx = *(const uint64_t*)(hdr + 16);
-    LARGE_INTEGER sz; GetFileSizeEx(g_dat, &sz);
-    if (sz.QuadPart < 24 || idx < 24 || idx > (uint64_t)sz.QuadPart || count > 100000) return false;
-    vector<uint8_t> raw((size_t)(sz.QuadPart - idx));
-    if (!ReadAt(g_dat, idx, raw.data(), (DWORD)raw.size())) return false;
-    const uint8_t* p = raw.data();
-    const uint8_t* end = p + raw.size();
+    HMODULE self = GetModuleHandleW(NULL);
+    HRSRC res = FindResourceW(self, MAKEINTRESOURCEW(IDR_PATCH_DATA), RT_RCDATA);
+    if (!res) return false;
+    DWORD size = SizeofResource(self, res);
+    HGLOBAL handle = LoadResource(self, res);
+    if (!handle || size < 24) return false;
+    const uint8_t* data = (const uint8_t*)LockResource(handle);
+    if (!data) return false;
+
+    HRSRC shaRes = FindResourceW(self, MAKEINTRESOURCEW(IDR_PATCH_SHA), RT_RCDATA);
+    if (!shaRes) return false;
+    DWORD shaLen = SizeofResource(self, shaRes);
+    HGLOBAL shaHandle = LoadResource(self, shaRes);
+    const uint8_t* expected = shaHandle ? (const uint8_t*)LockResource(shaHandle) : NULL;
+    if (!expected || shaLen != 32) return false;
+    uint8_t actual[32];
+    if (!Sha256(data, size, actual) || memcmp(actual, expected, 32) != 0) return false;
+
+    if (memcmp(data, "WA2DCPK1", 8)) return false;
+    uint32_t count = *(const uint32_t*)(data + 12);
+    uint64_t idx = *(const uint64_t*)(data + 16);
+    if (idx < 24 || idx > size || count > 100000) return false;
+    g_data = data;
+    g_dataSize = size;
+
+    const uint8_t* p = data + idx;
+    const uint8_t* end = data + size;
     auto need = [&](size_t n) { return (size_t)(end - p) >= n; };
     for (uint32_t i = 0; i < count; i++) {
         Record r;
@@ -573,7 +610,7 @@ template <class F> static bool UnpackRecord(const Record& r, F sink)
         uint64_t pos = 0;
         while (pos < r.size) {
             DWORD n = (DWORD)std::min<uint64_t>(buf.size(), r.size - pos);
-            if (!ReadAt(g_dat, r.offset + pos, buf.data(), n)) return false;
+            if (!ReadDat(r.offset + pos, buf.data(), n)) return false;
             if (!sink(buf.data(), n)) return false;
             pos += n;
         }
@@ -586,11 +623,11 @@ template <class F> static bool UnpackRecord(const Record& r, F sink)
     bool ok = true;
     while (ok && pos < end) {
         uint32_t h[2];
-        if (!ReadAt(g_dat, pos, h, 8)) { ok = false; break; }
+        if (!ReadDat(pos, h, 8)) { ok = false; break; }
         pos += 8;
         in.resize(h[1]); out.resize(h[0]);
         SIZE_T got = 0;
-        ok = ReadAt(g_dat, pos, in.data(), h[1]) &&
+        ok = ReadDat(pos, in.data(), h[1]) &&
              Decompress(dh, in.data(), h[1], out.data(), h[0], &got) && got == h[0] && sink(out.data(), h[0]);
         pos += h[1];
     }
@@ -603,7 +640,7 @@ static bool LoadBlob(const Record& r, vector<uint8_t>& out)
     out.clear();
     if (r.method == 0) {
         out.resize((size_t)r.stored);
-        return out.empty() || ReadAt(g_dat, r.offset, out.data(), (DWORD)out.size());
+        return out.empty() || ReadDat(r.offset, out.data(), (DWORD)out.size());
     }
     DECOMPRESSOR_HANDLE dh;
     if (!CreateDecompressor(COMPRESS_ALGORITHM_LZMS, NULL, &dh)) return false;
@@ -612,11 +649,11 @@ static bool LoadBlob(const Record& r, vector<uint8_t>& out)
     bool ok = true;
     while (ok && pos < end) {
         uint32_t h[2];
-        if (!ReadAt(g_dat, pos, h, 8)) { ok = false; break; }
+        if (!ReadDat(pos, h, 8)) { ok = false; break; }
         pos += 8;
         in.resize(h[1]); chunk.resize(h[0]);
         SIZE_T got = 0;
-        ok = ReadAt(g_dat, pos, in.data(), h[1]) &&
+        ok = ReadDat(pos, in.data(), h[1]) &&
              Decompress(dh, in.data(), h[1], chunk.data(), h[0], &got) && got == h[0];
         if (ok) out.insert(out.end(), chunk.begin(), chunk.end());
         pos += h[1];
@@ -912,6 +949,8 @@ static int g_page = P_XAPK;
 static wstring g_xapkPath, g_destDir, g_error, g_curFile;
 static wstring g_xapkStatus;
 static bool g_xapkOk;
+static bool g_dataOk = true;
+static wstring g_dataError;
 static bool g_useArt = true, g_use1080 = true;
 static volatile LONG64 g_doneBytes, g_totalBytes;
 static volatile bool g_cancel, g_installing;
@@ -1067,7 +1106,7 @@ static bool InstallAll()
                 DeleteFileW(dst.c_str());
                 CleanupInstall(destCreated);
                 return Fail(g_cancel ? L"Cancelled." : L"Could not unpack " + rel +
-                            L"\n(WA2DC_Patch.dat damaged, or the disk is full)");
+                            L"\n(embedded patch data damaged, or the disk is full)");
             }
         } else if (r.kind == 2) {
             wstring error;
@@ -1401,11 +1440,14 @@ static void Render(HDC hdc, float dt)
              RectF(x, y + 36, 540, 24));
         DrawPathBox(g, x, y + 70, 380, g_xapkPath, L"No XAPK chosen");
         AddButton(B_BROWSE_XAPK, x + 392, y + 70, 120, 36, L"Browse...");
-        if (!g_xapkStatus.empty()) {
+        if (!g_dataOk) {
+            Text(g, g_dataError, g_sans, 14, FontStyleItalic,
+                 Color(240, 240, 160, 160), RectF(x, y + 128, 540, 60));
+        } else if (!g_xapkStatus.empty()) {
             Text(g, g_xapkStatus, g_sans, 14, g_xapkOk ? FontStyleRegular : FontStyleItalic,
                  g_xapkOk ? Color(220, 190, 235, 215) : Color(235, 240, 170, 170), RectF(x, y + 128, 540, 44));
         }
-        AddButton(B_NEXT, x, 540, 190, 44, L"Next", g_xapkOk, true);
+        AddButton(B_NEXT, x, 540, 190, 44, L"Next", g_xapkOk && g_dataOk, true);
         break;
     case P_DEST: {
         Text(g, L"Choose destination folder.", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
@@ -1490,7 +1532,7 @@ static void Render(HDC hdc, float dt)
         if (music) {
             Font f(g_sans, 17, FontStyleRegular, UnitPixel);
             SolidBrush nb(Color(g_muted ? 110 : 230, 230, 240, 255));
-            g.DrawString(L"♪", -1, &f, PointF(rm.X + 9, rm.Y + 3), &nb);
+            g.DrawString(L"笙ｪ", -1, &f, PointF(rm.X + 9, rm.Y + 3), &nb);
             if (g_muted) g.DrawLine(&p, rm.X + 7, rm.Y + 22, rm.X + 27, rm.Y + 6);
         }
     }
@@ -1666,10 +1708,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show)
     LocalFree(argv);
 
     if (!LoadData()) {
-        if (g_auto) { WriteAutoLog(L"WA2DC_Patch.dat is missing or damaged."); return 1; }
-        MessageBoxW(NULL, L"WA2DC_Patch.dat is missing or damaged.\nKeep it next to this program.",
-                    kTitle, MB_ICONERROR);
-        return 1;
+        g_dataOk = false;
+        g_dataError = L"The patcher's embedded patch data is missing or damaged.\n"
+                      L"Download WA2DC Patcher.exe again.";
+        if (g_auto) {
+            WriteAutoLog(L"The patcher's embedded patch data is missing or damaged. Download WA2DC Patcher.exe again.");
+            return 1;
+        }
     }
     for (auto& r : g_records) if (r.kind == 5) { g_hasRawBundles = true; break; }
 
