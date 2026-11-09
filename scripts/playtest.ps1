@@ -1,11 +1,9 @@
-﻿param(
+param(
     [ValidateSet("gl", "d3d")] [string]$Mode = "gl",
     [string]$Build = "",
-    [ValidateSet("title", "loadingblack", "loadingburst", "illust", "illustbuy", "rank", "copyright", "communicate", "setup", "nowloading", "ripple", "charaselect", "lesson", "shop", "shopitem", "shopscroll", "shopwheel", "shopwheel2", "shopbg", "shopbgitem", "transitions10", "native_lesson", "native_pv", "gallery", "gallery_pages", "restore", "pvhub", "lesson1", "lesson2", "lesson3", "lessonplay", "pvplay", "pvstage", "pvstages", "pvstage15", "sweep15", "uiprobe", "shop15", "lesson2probe", "pvmouse", "pvleft", "pvauto", "savechange", "savereload", "fullscreen", "kazusa", "saves")] [string]$Scenario = "title",
+    [ValidateSet("title", "loadingblack", "loadingburst", "illust", "illustbuy", "rank", "copyright", "communicate", "setup", "nowloading", "ripple", "charaselect", "lesson", "shop", "shopitem", "shopscroll", "shopwheel", "shopwheel2", "shopbg", "shopbgitem", "transitions10", "native_lesson", "native_pv", "gallery", "gallery_pages", "restore", "pvhub", "lesson1", "lesson2", "lesson3", "lessonplay", "pvplay", "lesson2probe", "pvmouse", "pvleft", "pvauto", "savechange", "savereload", "fullscreen", "kazusa", "saves")] [string]$Scenario = "title",
     [int]$SaveSlotRow = 1,
     [int]$DialogRow = -1,
-    [int]$PvRow = 325,
-    [int]$PvStage = 1,
     [string]$WpReference = "",
     [switch]$InGameShot = $false,
     [switch]$WrongButton = $false
@@ -571,120 +569,6 @@ try {
             Click-Rel $process 500 462
             Start-Sleep -Seconds 25
             Save-Shot $process "t_pvplay"
-        }
-        "pvstage" {
-            Start-Sleep -Seconds 16
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 8
-            Click-Rel $process 515 620
-            Start-Sleep -Seconds 15
-            Save-Shot $process "t_pvlist" | Out-Null
-            Click-Rel $process 515 $PvRow
-            Start-Sleep -Seconds 5
-            Click-Rel $process 515 725
-            Start-Sleep -Milliseconds 300
-            for ($frame = 0; $frame -lt 36; $frame++) {
-                Save-Shot $process ("t_pvstage_" + $frame) | Out-Null
-                Start-Sleep -Milliseconds 500
-            }
-        }
-        "pvstages" {
-            Start-Sleep -Seconds 16
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 8
-            Click-Rel $process 515 620
-            Start-Sleep -Seconds 15
-            $rows = @(325, 380, 435, 490, 545)
-            for ($song = 0; $song -lt $rows.Count; $song++) {
-                Click-Rel $process 515 $rows[$song]
-                Start-Sleep -Seconds 4
-                Click-Rel $process 515 725
-                Start-Sleep -Seconds 10
-                Save-Shot $process ("t_pvstage_song" + $song) | Out-Null
-                Start-Sleep -Seconds 14
-                Save-Shot $process ("t_pvstage_song" + $song + "b") | Out-Null
-                Click-Rel $process 300 58
-                Start-Sleep -Seconds 12
-            }
-            foreach ($tab in @(@('costume', 300, 88), @('head', 410, 88), @('face', 535, 88), @('background', 635, 88))) {
-                Click-Rel $process $tab[1] $tab[2]
-                Start-Sleep -Seconds 6
-                Save-Shot $process ("t_pv" + $tab[0]) | Out-Null
-                Click-Rel $process 300 58
-                Start-Sleep -Seconds 6
-            }
-        }
-        "pvstage15" {
-            Start-Sleep -Seconds 16
-            Start-Sleep -Seconds 38
-            Save-Shot $process ("t_stage" + $PvStage + "_a") | Out-Null
-            Start-Sleep -Seconds 8
-            Save-Shot $process ("t_stage" + $PvStage + "_b") | Out-Null
-            Start-Sleep -Seconds 8
-            Save-Shot $process ("t_stage" + $PvStage + "_c") | Out-Null
-        }
-        "shop15" {
-            Start-Sleep -Seconds 16
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 3
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 12
-            Click-Rel $process 455 455
-            Start-Sleep -Seconds 20
-            Start-Sleep -Seconds 15
-            Save-Shot $process "t_shop15"
-        }
-        "sweep15" {
-            Start-Sleep -Seconds 16
-            # The debug hook loads PVSelect once and opens the requested tab.
-            Set-Content -Path (Join-Path $build "pv-tab.request") -Value "clothes" -Encoding ASCII
-            Start-Sleep -Seconds 30
-            Save-Shot $process "t_sweep_tab_clothes" | Out-Null
-            Click-Rel $process 742 416
-            Start-Sleep -Seconds 4
-            Save-Shot $process "t_sweep_tab_clothes_next" | Out-Null
-            foreach ($tab in @("headaccessories", "faceaccessories", "background", "music")) {
-                Set-Content -Path (Join-Path $build "pv-tab.request") -Value $tab -Encoding ASCII
-                Start-Sleep -Seconds 8
-                Save-Shot $process ("t_sweep_tab_" + $tab) | Out-Null
-                Click-Rel $process 742 416
-                Start-Sleep -Seconds 4
-                Save-Shot $process ("t_sweep_tab_" + $tab + "_next") | Out-Null
-            }
-            # Direct stage launch through the game's own PV scene path.
-            Set-Content -Path (Join-Path $build "pv-stage.request") -Value 1 -Encoding ASCII
-            Start-Sleep -Seconds 35
-            Save-Shot $process "t_sweep_stage1_a" | Out-Null
-            Start-Sleep -Seconds 8
-            Save-Shot $process "t_sweep_stage1_b" | Out-Null
-            Start-Sleep -Seconds 8
-            Save-Shot $process "t_sweep_stage1_c" | Out-Null
-            Set-Content -Path (Join-Path $build "pv-back.request") -Value 1 -Encoding ASCII
-            Start-Sleep -Seconds 20
-            for ($stage = 2; $stage -le 5; $stage++) {
-                Set-Content -Path (Join-Path $build "pv-stage.request") -Value $stage -Encoding ASCII
-                Start-Sleep -Seconds 30
-                Save-Shot $process ("t_sweep_stage" + $stage + "_a") | Out-Null
-                Start-Sleep -Seconds 8
-                Save-Shot $process ("t_sweep_stage" + $stage + "_b") | Out-Null
-                Start-Sleep -Seconds 8
-                Save-Shot $process ("t_sweep_stage" + $stage + "_c") | Out-Null
-                Set-Content -Path (Join-Path $build "pv-back.request") -Value 1 -Encoding ASCII
-                Start-Sleep -Seconds 20
-            }
-            Save-Shot $process "t_sweep_end"
-        }
-        "uiprobe" {
-            Start-Sleep -Seconds 16
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 3
-            Save-Shot $process "t_uiprobe_1" | Out-Null
-            Click-Rel $process 515 490
-            Start-Sleep -Seconds 12
-            Save-Shot $process "t_uiprobe_2" | Out-Null
-            Click-Rel $process 455 455
-            Start-Sleep -Seconds 15
-            Save-Shot $process "t_uiprobe_3" | Out-Null
         }
         "lesson2probe" {            Start-Sleep -Seconds 16
             Click-Rel $process 515 490
