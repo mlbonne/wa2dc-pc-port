@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.IO;
+using System.Threading;
 using UnityEngine;
 
 // PC port: paint the game's own Left/Right letterbox curtains with the supplied
@@ -7,9 +8,15 @@ using UnityEngine;
 // and rebuilds them on resize; DropCurtain.Initalize calls Apply() after every
 // build, so the art follows resize/fullscreen.
 //
-// The art is opaque (bg.png composited over black), pre-scaled to the exact
-// visible strip size with an area average, and drawn with Unlit/Texture so the
-// backbuffer can never show through. The center viewport is never touched.
+// The strip texture is allocated at a power-of-two size. Unity 3.5 resamples a
+// non-power-of-two runtime texture to the next power of two when it uploads it,
+// which filtered the strip even with Point sampling. The visible w x h strip is
+// written into the bottom-left corner and the quad's UVs cover only that region;
+// the rest is filled with a copy of the edge pixels so nothing bleeds.
+//
+// The pixel math runs on a worker thread and the finished Color32[] is uploaded
+// on the main thread, so a resize never blocks on the resample. The old picture
+// stays on screen (stretched to the new rect) until the new one is ready.
 public static class PortCurtainSkin
 {
     private const string ArtName = "Port Curtain Art";
@@ -19,13 +26,85 @@ public static class PortCurtainSkin
 
     private static Texture2D s_Source;
     private static Color32[] s_Opaque;
+    private static int s_SourceWidth;
+    private static int s_SourceHeight;
     private static bool s_Loaded;
     private static bool s_Logged;
+    private static bool s_EnvLogged;
+    private static bool s_TexLogged;
+    private static bool s_TestPattern;
+    private static bool s_StripDump;
+    private static Shader s_Shader;
+    private static float s_OffsetX = float.NaN;
+    private static float s_OffsetY = float.NaN;
+    private static bool s_QuadLogged;
+    private static float s_RectTimer;
+    private static int s_LastScreenWidth;
+    private static int s_LastScreenHeight;
 
-    private static Texture2D s_LeftTexture;
-    private static Texture2D s_RightTexture;
-    private static string s_LeftKey = string.Empty;
-    private static string s_RightKey = string.Empty;
+    private sealed class Side
+    {
+        public bool IsLeft;
+        public Texture2D Texture;
+        public int TexWidth;
+        public int TexHeight;
+        public int PotWidth;
+        public int PotHeight;
+        public Color32[] PotBuffer;
+        public int DesiredWidth;
+        public int DesiredHeight;
+        public int RequestGen;
+        public bool Building;
+        public int BuildingGen;
+        public Color32[] ReadyPixels;
+        public string ReadyError;
+        public int ReadyGen;
+        public int ReadyWidth;
+        public int ReadyHeight;
+        public int LastFailedGen = -1;
+        public bool ErrorLogged;
+        public float LastMs;
+        public float LastScale;
+        public float LastKernel;
+        public int LastPotWidth;
+        public int LastPotHeight;
+        public volatile bool ReadyFlag;
+        public Transform Art;
+        public Transform Curtain;
+        public MeshFilter Filter;
+        public MeshRenderer Renderer;
+        public bool HasRect;
+        public float ScreenLeft;
+        public float ScreenRight;
+        public float ScreenBottom;
+        public float ScreenTop;
+        public int LastScreenWidth;
+        public int LastScreenHeight;
+        public Vector3 LastPosition;
+        public Vector3 LastTransformScale;
+    }
+
+    private sealed class BuildJob
+    {
+        public bool Left;
+        public int Width;
+        public int Height;
+        public int PotWidth;
+        public int PotHeight;
+        public int Gen;
+        public Color32[] Source;
+        public int SourceWidth;
+        public int SourceHeight;
+        public float SourceX0;
+        public float SourceY0;
+        public float SourceXScale;
+        public float SourceYScale;
+        public bool TestPattern;
+        public float Ms;
+    }
+
+    private static readonly Side s_Left = new Side();
+    private static readonly Side s_Right = new Side();
 
     public static void Apply(DropCurtain curtain)
     {
@@ -42,134 +121,304 @@ public static class PortCurtainSkin
         {
             return;
         }
+        DateTime mainStart = DateTime.UtcNow;
 
         Transform parent = curtain.transform;
         Transform art = parent.Find(ArtName);
         if (art == null)
         {
-            GameObject primitive = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            primitive.name = ArtName;
-            Collider collider = primitive.GetComponent<Collider>();
-            if (collider != null)
-            {
-                UnityEngine.Object.Destroy(collider);
-            }
-            primitive.layer = parent.gameObject.layer;
-            primitive.transform.parent = parent;
-            primitive.transform.localPosition = new Vector3(0f, 0.01f, 0f);
-            primitive.transform.localRotation = Quaternion.identity;
-            primitive.transform.localScale = Vector3.one;
-            art = primitive.transform;
+            GameObject quad = new GameObject(ArtName);
+            quad.layer = parent.gameObject.layer;
+            quad.transform.parent = parent;
+            quad.transform.localPosition = new Vector3(0f, 0.01f, 0f);
+            quad.transform.localRotation = Quaternion.identity;
+            quad.transform.localScale = Vector3.one;
+            quad.AddComponent<MeshFilter>();
+            quad.AddComponent<MeshRenderer>();
+            art = quad.transform;
         }
-
+        Collider oldCollider = art.GetComponent<Collider>();
+        if (oldCollider != null)
+        {
+            UnityEngine.Object.Destroy(oldCollider);
+        }
+        MeshFilter meshFilter = art.GetComponent<MeshFilter>();
+        if (meshFilter == null)
+        {
+            meshFilter = art.gameObject.AddComponent<MeshFilter>();
+        }
         MeshRenderer renderer = art.GetComponent<MeshRenderer>();
         if (renderer == null)
         {
-            return;
+            renderer = art.gameObject.AddComponent<MeshRenderer>();
         }
-        Shader shader = Shader.Find("Unlit/Texture");
-        if (shader == null)
+        if (s_Shader == null)
         {
-            shader = Shader.Find("Unlit/Transparent");
+            s_Shader = Shader.Find("Unlit/Texture");
+            if (s_Shader == null)
+            {
+                s_Shader = Shader.Find("Unlit/Transparent");
+            }
         }
-        if (shader == null)
+        if (s_Shader == null)
         {
             return;
         }
 
-        float uMin;
-        float uMax;
-        float vTop;
-        float vBottom;
+        float screenLeft;
+        float screenRight;
+        float screenTop;
+        float screenBottom;
         float visibleWidth;
         float visibleHeight;
-        if (!MeasureVisible(parent, out uMin, out uMax, out vTop, out vBottom, out visibleWidth, out visibleHeight))
+        if (!MeasureVisible(parent, out screenLeft, out screenRight, out screenTop, out screenBottom,
+                out visibleWidth, out visibleHeight))
         {
             return;
         }
 
         bool left = curtain.type == DropCurtain.DropCurtainType.Left;
+        Side side = left ? s_Left : s_Right;
+        side.IsLeft = left;
+        side.Art = art;
+        side.Curtain = parent;
+        side.Filter = meshFilter;
+        side.Renderer = renderer;
+        side.HasRect = true;
+        side.ScreenLeft = screenLeft;
+        side.ScreenRight = screenRight;
+        side.ScreenTop = screenTop;
+        side.ScreenBottom = screenBottom;
+        side.LastScreenWidth = Screen.width;
+        side.LastScreenHeight = Screen.height;
+        side.LastPosition = parent.position;
+        side.LastTransformScale = parent.lossyScale;
+
         int targetWidth = Mathf.Max(1, Mathf.RoundToInt(visibleWidth));
         int targetHeight = Mathf.Max(1, Mathf.RoundToInt(visibleHeight));
-        string key = ConstructKey(left, targetWidth, targetHeight);
 
-        Texture2D texture;
-        if (left)
+        if (!s_EnvLogged)
         {
-            if (s_LeftTexture == null || s_LeftKey != key)
+            s_EnvLogged = true;
+            Camera envCamera = FindCamera(parent);
+            string cameras = "";
+            Camera[] all = Camera.allCameras;
+            for (int i = 0; i < all.Length; i++)
             {
-                Texture2D previous = s_LeftTexture;
-                s_LeftTexture = BuildStrip(left, targetWidth, targetHeight, key);
-                s_LeftKey = key;
-                if (previous != null)
-                {
-                    UnityEngine.Object.Destroy(previous);
-                }
+                Camera cam = all[i];
+                cameras += "[" + cam.name + " depth=" + cam.depth + " ortho=" + cam.orthographic +
+                    " rect=" + cam.rect.ToString() + " target=" + (cam.targetTexture != null) +
+                    " mask=" + cam.cullingMask + " px=" + cam.pixelWidth + "x" + cam.pixelHeight + "]";
             }
-            texture = s_LeftTexture;
-        }
-        else
-        {
-            if (s_RightTexture == null || s_RightKey != key)
-            {
-                Texture2D previous = s_RightTexture;
-                s_RightTexture = BuildStrip(left, targetWidth, targetHeight, key);
-                s_RightKey = key;
-                if (previous != null)
-                {
-                    UnityEngine.Object.Destroy(previous);
-                }
-            }
-            texture = s_RightTexture;
-        }
-        if (texture == null)
-        {
-            return;
+            Debug.Log("STRIPENV aa=" + QualitySettings.antiAliasing +
+                " quality=" + QualitySettings.GetQualityLevel() + "/" + QualitySettings.names.Length +
+                " aniso=" + QualitySettings.anisotropicFiltering +
+                " npot=" + NpotSupportText() +
+                " filter=Point screen=" + Screen.width + "x" + Screen.height +
+                " camRect=" + (envCamera != null ? envCamera.rect.ToString() : "-") +
+                " ortho=" + (envCamera != null ? envCamera.orthographic.ToString() : "-") +
+                " targetTex=" + (envCamera != null && envCamera.targetTexture != null) +
+                " gl=" + SystemInfo.graphicsDeviceVersion + " cams=" + cameras);
         }
 
-        bool point = Mathf.Abs(visibleWidth - targetWidth) < 0.01f
-            && Mathf.Abs(visibleHeight - targetHeight) < 0.01f;
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = point ? FilterMode.Point : FilterMode.Bilinear;
-
-        Material material = renderer.material;
-        if (material == null || material.shader == null || material.shader.name != shader.name)
+        if (side.DesiredWidth != targetWidth || side.DesiredHeight != targetHeight || side.RequestGen == 0)
         {
-            material = new Material(shader);
-            renderer.material = material;
+            side.DesiredWidth = targetWidth;
+            side.DesiredHeight = targetHeight;
+            side.RequestGen++;
         }
-        material.mainTexture = texture;
-        material.color = Color.white;
-        renderer.enabled = true;
-        renderer.castShadows = false;
-        renderer.receiveShadows = false;
 
-        // The strip texture is exactly the visible rect, so the visible curtain
-        // region maps to the full texture at one texel per screen pixel.
-        float rangeU = uMax - uMin;
-        float rangeV = vBottom - vTop;
-        float scaleX = 1f / rangeU;
-        float offsetX = -uMin * scaleX;
-        float scaleY = -1f / rangeV;
-        float offsetY = 1f - scaleY * vTop;
-        material.mainTextureScale = new Vector2(scaleX, scaleY);
-        material.mainTextureOffset = new Vector2(offsetX, offsetY);
+        // Draw immediately with whatever texture we have (the old picture
+        // stretched to the new rect, or nothing on the very first build).
+        ApplyToArt(side);
+        MaybeStartBuild(side);
 
         if (!s_Logged)
         {
             s_Logged = true;
-            Debug.Log("PortCurtainSkin: source=" + s_Source.width + "x" + s_Source.height
-                + " mipmaps=" + s_Source.mipmapCount + " format=" + s_Source.format
-                + " strip=" + targetWidth + "x" + targetHeight + " filter=" + (point ? "Point" : "Bilinear"));
+            Debug.Log("PortCurtainSkin: source=" + s_SourceWidth + "x" + s_SourceHeight
+                + " strip=" + targetWidth + "x" + targetHeight + " filter=Point pot=yes");
+        }
+        Debug.Log("STRIPMAIN " + (left ? "L" : "R") + " " + targetWidth + "x" + targetHeight +
+            " ms=" + (DateTime.UtcNow - mainStart).TotalMilliseconds.ToString("F2"));
+    }
+
+    // Called once per frame by PortInput.Update: uploads finished worker
+    // results on the main thread and starts the next queued size.
+    public static void Tick()
+    {
+        // React immediately to a real screen-size change; the 0.25 s poll stays
+        // as a fallback for camera/curtain moves without a Screen change.
+        int screenWidth = Screen.width;
+        int screenHeight = Screen.height;
+        if (screenWidth != s_LastScreenWidth || screenHeight != s_LastScreenHeight)
+        {
+            s_LastScreenWidth = screenWidth;
+            s_LastScreenHeight = screenHeight;
+            RefreshRect(s_Left);
+            RefreshRect(s_Right);
+        }
+        s_RectTimer += Time.deltaTime;
+        if (s_RectTimer >= 0.25f)
+        {
+            s_RectTimer = 0f;
+            RefreshRect(s_Left);
+            RefreshRect(s_Right);
+        }
+        TickSide(s_Left);
+        TickSide(s_Right);
+    }
+
+    private static void TickSide(Side side)
+    {
+        if (side.ReadyFlag)
+        {
+            Color32[] pixels;
+            string error;
+            int gen;
+            int width;
+            int height;
+            lock (side)
+            {
+                pixels = side.ReadyPixels;
+                error = side.ReadyError;
+                gen = side.ReadyGen;
+                width = side.ReadyWidth;
+                height = side.ReadyHeight;
+                side.ReadyPixels = null;
+                side.ReadyError = null;
+                side.ReadyFlag = false;
+            }
+            side.Building = false;
+            if (pixels == null)
+            {
+                // A worker exception must never leave Building set or reach Upload.
+                side.LastFailedGen = gen;
+                if (!string.IsNullOrEmpty(error) && !side.ErrorLogged)
+                {
+                    side.ErrorLogged = true;
+                    Debug.LogError("PortCurtainSkin: strip build failed: " + error);
+                }
+                MaybeStartBuild(side);
+                return;
+            }
+            if (gen == side.RequestGen && width == side.DesiredWidth && height == side.DesiredHeight &&
+                side.Art != null)
+            {
+                DateTime uploadStart = DateTime.UtcNow;
+                Upload(side, pixels, width, height);
+                ApplyToArt(side);
+                float uploadMs = (float)(DateTime.UtcNow - uploadStart).TotalMilliseconds;
+                // The debug dump (PNG encode) is outside the shipping upload cost.
+                Dump(side, pixels, width, height);
+                Debug.Log("STRIPUPLOAD " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
+                    " ms=" + uploadMs.ToString("F2"));
+            }
+        }
+        MaybeStartBuild(side);
+    }
+
+    private static void RefreshRect(Side side)
+    {
+        if (side.Curtain == null || !side.HasRect || side.Art == null)
+        {
+            return;
+        }
+        float left;
+        float right;
+        float top;
+        float bottom;
+        float visibleWidth;
+        float visibleHeight;
+        if (!MeasureVisible(side.Curtain, out left, out right, out top, out bottom,
+                out visibleWidth, out visibleHeight))
+        {
+            return;
+        }
+        bool same = Screen.width == side.LastScreenWidth && Screen.height == side.LastScreenHeight &&
+            Math.Abs(left - side.ScreenLeft) < 0.01f && Math.Abs(right - side.ScreenRight) < 0.01f &&
+            Math.Abs(top - side.ScreenTop) < 0.01f && Math.Abs(bottom - side.ScreenBottom) < 0.01f;
+        if (same)
+        {
+            return;
+        }
+        side.ScreenLeft = left;
+        side.ScreenRight = right;
+        side.ScreenTop = top;
+        side.ScreenBottom = bottom;
+        side.LastScreenWidth = Screen.width;
+        side.LastScreenHeight = Screen.height;
+        side.LastPosition = side.Curtain.position;
+        side.LastTransformScale = side.Curtain.lossyScale;
+        int width = Mathf.Max(1, Mathf.RoundToInt(visibleWidth));
+        int height = Mathf.Max(1, Mathf.RoundToInt(visibleHeight));
+        bool resized = width != side.DesiredWidth || height != side.DesiredHeight;
+        if (resized)
+        {
+            side.DesiredWidth = width;
+            side.DesiredHeight = height;
+            side.RequestGen++;
+        }
+        ApplyToArt(side);
+        Debug.Log("STRIPRECT " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
+            " screen=" + Screen.width + "x" + Screen.height + " resized=" + resized);
+    }
+
+    private static void MaybeStartBuild(Side side)
+    {
+        if (side.Building || !side.HasRect || s_Opaque == null)
+        {
+            return;
+        }
+        if (side.Texture != null && side.TexWidth == side.DesiredWidth && side.TexHeight == side.DesiredHeight)
+        {
+            return;
+        }
+        if (side.DesiredWidth <= 0 || side.DesiredHeight <= 0)
+        {
+            return;
+        }
+        // Do not retry the same failed request every frame; a new size bumps
+        // RequestGen and gets one fresh attempt.
+        if (side.LastFailedGen == side.RequestGen)
+        {
+            return;
+        }
+
+        BuildJob job = new BuildJob();
+        job.Left = side.IsLeft;
+        job.Width = side.DesiredWidth;
+        job.Height = side.DesiredHeight;
+        job.PotWidth = NextPowerOfTwo(side.DesiredWidth);
+        job.PotHeight = NextPowerOfTwo(side.DesiredHeight);
+        job.Gen = side.RequestGen;
+        job.Source = s_Opaque;
+        job.SourceWidth = s_SourceWidth;
+        job.SourceHeight = s_SourceHeight;
+        job.TestPattern = s_TestPattern;
+        ComputeCrop(job);
+
+        side.Building = true;
+        side.BuildingGen = job.Gen;
+        side.ErrorLogged = false;
+        try
+        {
+            ThreadPool.QueueUserWorkItem(BuildWorker, job);
+        }
+        catch (Exception exception)
+        {
+            side.Building = false;
+            side.LastFailedGen = job.Gen;
+            Debug.LogError("PortCurtainSkin: could not queue strip build: " + exception);
         }
     }
 
-    private static Texture2D BuildStrip(bool left, int width, int height, string key)
+    private static void ComputeCrop(BuildJob job)
     {
-        float halfWidth = s_Source.width * 0.5f;
-        float halfHeight = s_Source.height;
+        float halfWidth = job.SourceWidth * 0.5f;
+        float halfHeight = job.SourceHeight;
         float halfAspect = halfWidth / halfHeight;
-        float stripAspect = (float)width / height;
+        float stripAspect = (float)job.Width / job.Height;
 
         float cropWidth;
         float cropHeight;
@@ -184,10 +433,10 @@ public static class PortCurtainSkin
             cropHeight = halfWidth / stripAspect;
         }
 
-        float faceCenter = left ? FaceCenterLeft : FaceCenterRight;
+        float faceCenter = (job.Left ? FaceCenterLeft : FaceCenterRight) * (job.SourceWidth / 1128f);
         float centerX = Mathf.Clamp(faceCenter, cropWidth * 0.5f, halfWidth - cropWidth * 0.5f);
-        float halfStart = left ? 0f : 0.5f;
-        float cropX = halfStart * s_Source.width + (centerX - cropWidth * 0.5f);
+        float halfStart = job.Left ? 0f : 0.5f;
+        float cropX = halfStart * job.SourceWidth + (centerX - cropWidth * 0.5f);
         float cropTop = 0f;
         if (cropHeight < halfHeight)
         {
@@ -201,116 +450,564 @@ public static class PortCurtainSkin
         float cropBottomV = (halfHeight - (cropTop + cropHeight)) / halfHeight;
         float cropTopV = (halfHeight - cropTop) / halfHeight;
 
-        int sourceWidth = s_Source.width;
-        int sourceHeight = s_Source.height;
-        Color32[] target = new Color32[width * height];
-        float sourceX0 = cropX;
-        float sourceY0 = cropBottomV * sourceHeight;
-        float sourceXScale = cropWidth / width;
-        float sourceYScale = (cropTopV - cropBottomV) * sourceHeight / height;
+        job.SourceX0 = cropX;
+        job.SourceY0 = cropBottomV * job.SourceHeight;
+        job.SourceXScale = cropWidth / job.Width;
+        job.SourceYScale = (cropTopV - cropBottomV) * job.SourceHeight / job.Height;
+    }
 
-        // Lanczos-3 downsample of the face-centred crop. At 0.83x the source is
-        // still sharper than the strip, so the kernel is safe and keeps the
-        // edge energy close to the ideal Lanczos reference.
+    // Worker thread: pure array math, no Unity API calls. Any exception is
+    // caught here: an unhandled ThreadPool exception would kill the process on
+    // Mono 2.x, and leaving Building set would freeze the strips forever.
+    private static void BuildWorker(object state)
+    {
+        BuildJob job = state as BuildJob;
+        if (job == null)
+        {
+            return;
+        }
+        Side side = job.Left ? s_Left : s_Right;
+        try
+        {
+            DateTime start = DateTime.UtcNow;
+            Color32[] region = BuildPixels(job);
+
+            // Pad to the POT size here, not on the main thread. The buffer is
+            // reused while the POT size is unchanged; only one build runs per
+            // side and the main thread is finished with the previous buffer
+            // after SetPixels32, so there is no concurrent reader/writer.
+            Color32[] full;
+            lock (side)
+            {
+                int needed = job.PotWidth * job.PotHeight;
+                if (side.PotBuffer == null || side.PotBuffer.Length != needed)
+                {
+                    side.PotBuffer = new Color32[needed];
+                }
+                full = side.PotBuffer;
+            }
+            FillPot(full, region, job.Width, job.Height, job.PotWidth, job.PotHeight);
+            job.Ms = (float)(DateTime.UtcNow - start).TotalMilliseconds;
+
+            lock (side)
+            {
+                side.ReadyPixels = full;
+                side.ReadyGen = job.Gen;
+                side.ReadyWidth = job.Width;
+                side.ReadyHeight = job.Height;
+                side.ReadyError = null;
+                side.LastMs = job.Ms;
+                side.LastScale = 1f / job.SourceYScale;
+                side.LastKernel = Math.Max(1f, job.SourceYScale);
+                side.ReadyFlag = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            lock (side)
+            {
+                side.ReadyPixels = null;
+                side.ReadyGen = job.Gen;
+                side.ReadyWidth = job.Width;
+                side.ReadyHeight = job.Height;
+                side.ReadyError = exception.ToString();
+                side.ReadyFlag = true;
+            }
+        }
+    }
+
+    private static void FillPot(
+        Color32[] full,
+        Color32[] region,
+        int width,
+        int height,
+        int potWidth,
+        int potHeight)
+    {
+        for (int y = 0; y < potHeight; y++)
+        {
+            int sy = y < height ? y : height - 1;
+            int dstRow = y * potWidth;
+            int srcRow = sy * width;
+            for (int x = 0; x < potWidth; x++)
+            {
+                int sx = x < width ? x : width - 1;
+                full[dstRow + x] = region[srcRow + sx];
+            }
+        }
+    }
+
+    private static Color32[] BuildPixels(BuildJob job)
+    {
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_FAIL")))
+        {
+            // Debug-only fault injection for the worker exception-safety test.
+            throw new InvalidOperationException("WA2DC_STRIP_FAIL test exception");
+        }
+        int width = job.Width;
+        int height = job.Height;
+        Color32[] target = new Color32[width * height];
+
+        if (job.TestPattern)
+        {
+            Color32 black = new Color32(0, 0, 0, 255);
+            Color32 white = new Color32(255, 255, 255, 255);
+            Color32 red = new Color32(255, 0, 0, 255);
+            Color32 green = new Color32(0, 255, 0, 255);
+            for (int ty = 0; ty < height; ty++)
+            {
+                for (int tx = 0; tx < width; tx++)
+                {
+                    bool border = tx == 0 || ty == 0 || tx == width - 1 || ty == height - 1;
+                    bool line = tx % 10 == 0 || ty % 10 == 0;
+                    bool light = ((tx + ty) & 1) == 0;
+                    target[ty * width + tx] = border ? green : (line ? red : (light ? white : black));
+                }
+            }
+            return target;
+        }
+
+        int sourceWidth = job.SourceWidth;
+        int sourceHeight = job.SourceHeight;
+        Color32[] source = job.Source;
+        float sourceX0 = job.SourceX0;
+        float sourceY0 = job.SourceY0;
+        float sourceXScale = job.SourceXScale;
+        float sourceYScale = job.SourceYScale;
+
+        // Widen the Lanczos support when downsampling so the kernel acts as an
+        // antialiasing filter instead of aliasing a fixed 6-tap window. For
+        // upsampling the support stays at 3 source pixels.
+        float kernelX = Math.Max(1f, sourceXScale);
+        float kernelY = Math.Max(1f, sourceYScale);
+
+        int[] xStart = new int[width];
+        int[] xCount = new int[width];
+        float[][] xWeight = new float[width][];
+        for (int tx = 0; tx < width; tx++)
+        {
+            float sx = sourceX0 + (tx + 0.5f) * sourceXScale - 0.5f;
+            int first = (int)Math.Floor(sx - 3.0 * kernelX);
+            int last = (int)Math.Ceiling(sx + 3.0 * kernelX);
+            int count = last - first + 1;
+            float[] weights = new float[count];
+            float sum = 0f;
+            for (int k = 0; k < count; k++)
+            {
+                float value = Lanczos((sx - (first + k)) / kernelX);
+                weights[k] = value;
+                sum += value;
+            }
+            if (sum != 0f)
+            {
+                for (int k = 0; k < count; k++) weights[k] /= sum;
+            }
+            xStart[tx] = first;
+            xCount[tx] = count;
+            xWeight[tx] = weights;
+        }
+        int[] yStart = new int[height];
+        int[] yCount = new int[height];
+        float[][] yWeight = new float[height][];
         for (int ty = 0; ty < height; ty++)
         {
             float sy = sourceY0 + (ty + 0.5f) * sourceYScale - 0.5f;
-            int syBase = Mathf.FloorToInt(sy);
-            float syFraction = sy - syBase;
+            int first = (int)Math.Floor(sy - 3.0 * kernelY);
+            int last = (int)Math.Ceiling(sy + 3.0 * kernelY);
+            int count = last - first + 1;
+            float[] weights = new float[count];
+            float sum = 0f;
+            for (int k = 0; k < count; k++)
+            {
+                float value = Lanczos((sy - (first + k)) / kernelY);
+                weights[k] = value;
+                sum += value;
+            }
+            if (sum != 0f)
+            {
+                for (int k = 0; k < count; k++) weights[k] /= sum;
+            }
+            yStart[ty] = first;
+            yCount[ty] = count;
+            yWeight[ty] = weights;
+        }
+
+        int minSy = sourceHeight;
+        int maxSy = 0;
+        for (int ty = 0; ty < height; ty++)
+        {
+            for (int k = 0; k < yWeight[ty].Length; k++)
+            {
+                int iy = Clamp(yStart[ty] + k, 0, sourceHeight - 1);
+                if (iy < minSy) minSy = iy;
+                if (iy > maxSy) maxSy = iy;
+            }
+        }
+        float[] temp = new float[sourceHeight * width * 3];
+        for (int sy = minSy; sy <= maxSy; sy++)
+        {
+            int row = sy * sourceWidth;
             for (int tx = 0; tx < width; tx++)
             {
-                float sx = sourceX0 + (tx + 0.5f) * sourceXScale - 0.5f;
-                int sxBase = Mathf.FloorToInt(sx);
-                float sxFraction = sx - sxBase;
-                float red = 0f;
-                float green = 0f;
-                float blue = 0f;
-                float weight = 0f;
-                for (int ky = -2; ky <= 3; ky++)
+                float[] weights = xWeight[tx];
+                int first = xStart[tx];
+                float red = 0f, green = 0f, blue = 0f;
+                for (int k = 0; k < weights.Length; k++)
                 {
-                    float wy = Lanczos(syFraction - ky);
-                    if (wy == 0f)
-                    {
-                        continue;
-                    }
-                    int iy = syBase + ky;
-                    if (iy < 0) iy = 0;
-                    if (iy >= sourceHeight) iy = sourceHeight - 1;
-                    int row = iy * sourceWidth;
-                    for (int kx = -2; kx <= 3; kx++)
-                    {
-                        float wx = Lanczos(sxFraction - kx);
-                        if (wx == 0f)
-                        {
-                            continue;
-                        }
-                        int ix = sxBase + kx;
-                        if (ix < 0) ix = 0;
-                        if (ix >= sourceWidth) ix = sourceWidth - 1;
-                        float w = wx * wy;
-                        Color32 pixel = s_Opaque[row + ix];
-                        red += pixel.r * w;
-                        green += pixel.g * w;
-                        blue += pixel.b * w;
-                        weight += w;
-                    }
+                    Color32 pixel = source[row + Clamp(first + k, 0, sourceWidth - 1)];
+                    red += pixel.r * weights[k];
+                    green += pixel.g * weights[k];
+                    blue += pixel.b * weights[k];
                 }
-                if (weight != 0f)
+                int to = (sy * width + tx) * 3;
+                temp[to] = red;
+                temp[to + 1] = green;
+                temp[to + 2] = blue;
+            }
+        }
+        for (int ty = 0; ty < height; ty++)
+        {
+            float[] weights = yWeight[ty];
+            int first = yStart[ty];
+            for (int tx = 0; tx < width; tx++)
+            {
+                float red = 0f, green = 0f, blue = 0f;
+                for (int k = 0; k < weights.Length; k++)
                 {
-                    target[ty * width + tx] = new Color32(
-                        (byte)Mathf.Clamp(Mathf.RoundToInt(red / weight), 0, 255),
-                        (byte)Mathf.Clamp(Mathf.RoundToInt(green / weight), 0, 255),
-                        (byte)Mathf.Clamp(Mathf.RoundToInt(blue / weight), 0, 255),
-                        255
-                    );
+                    int iy = Clamp(first + k, 0, sourceHeight - 1);
+                    int from = (iy * width + tx) * 3;
+                    red += temp[from] * weights[k];
+                    green += temp[from + 1] * weights[k];
+                    blue += temp[from + 2] * weights[k];
                 }
+                target[ty * width + tx] = new Color32(
+                    (byte)Clamp((int)Math.Round(red), 0, 255),
+                    (byte)Clamp((int)Math.Round(green), 0, 255),
+                    (byte)Clamp((int)Math.Round(blue), 0, 255),
+                    255
+                );
             }
         }
 
-        Texture2D texture = new Texture2D(width, height, TextureFormat.RGB24, false);
-        texture.SetPixels32(target);
-        texture.Apply(false);
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = FilterMode.Point;
-        return texture;
+        // Lead's A/B choice (b): unsharp mask amount 0.35 / radius 0.6 only when
+        // the art is being downsampled. Upsampling stays a clean Lanczos.
+        if (sourceXScale > 1f && sourceYScale > 1f)
+        {
+            ApplyUnsharp(target, width, height, 0.35f, 0.6f);
+        }
+        return target;
     }
 
-    private static string ConstructKey(bool left, int width, int height)
+    private static void ApplyUnsharp(Color32[] pixels, int width, int height, float amount, float radius)
     {
-        return (left ? "L" : "R") + ":" + width + "x" + height;
+        int taps = Math.Max(1, (int)Math.Ceiling(radius * 2.0));
+        float sigma = radius;
+        int length = taps * 2 + 1;
+        float[] kernel = new float[length];
+        float sum = 0f;
+        for (int i = 0; i < length; i++)
+        {
+            float x = i - taps;
+            float value = (float)Math.Exp(-(x * x) / (2f * sigma * sigma));
+            kernel[i] = value;
+            sum += value;
+        }
+        for (int i = 0; i < length; i++) kernel[i] /= sum;
+
+        float[] blurRed = new float[pixels.Length];
+        float[] blurGreen = new float[pixels.Length];
+        float[] blurBlue = new float[pixels.Length];
+
+        // Horizontal pass, row by row (contiguous reads).
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * width;
+            for (int x = 0; x < width; x++)
+            {
+                float sr = 0f, sg = 0f, sb = 0f;
+                for (int k = 0; k < length; k++)
+                {
+                    int sx = Clamp(x + k - taps, 0, width - 1);
+                    Color32 pixel = pixels[row + sx];
+                    sr += pixel.r * kernel[k];
+                    sg += pixel.g * kernel[k];
+                    sb += pixel.b * kernel[k];
+                }
+                int to = row + x;
+                blurRed[to] = sr;
+                blurGreen[to] = sg;
+                blurBlue[to] = sb;
+            }
+        }
+        // Vertical pass, row by row: the five source rows are contiguous in the
+        // blur arrays, so this stays cache friendly.
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * width;
+            for (int x = 0; x < width; x++)
+            {
+                float sr = 0f, sg = 0f, sb = 0f;
+                for (int k = 0; k < length; k++)
+                {
+                    int sy = Clamp(y + k - taps, 0, height - 1);
+                    int from = sy * width + x;
+                    sr += blurRed[from] * kernel[k];
+                    sg += blurGreen[from] * kernel[k];
+                    sb += blurBlue[from] * kernel[k];
+                }
+                int to = row + x;
+                Color32 pixel = pixels[to];
+                int r = (int)Math.Round(pixel.r + amount * (pixel.r - sr));
+                int g = (int)Math.Round(pixel.g + amount * (pixel.g - sg));
+                int b = (int)Math.Round(pixel.b + amount * (pixel.b - sb));
+                pixels[to] = new Color32(
+                    (byte)Clamp(r, 0, 255),
+                    (byte)Clamp(g, 0, 255),
+                    (byte)Clamp(b, 0, 255),
+                    255
+                );
+            }
+        }
+    }
+
+    private static void Upload(Side side, Color32[] full, int width, int height)
+    {
+        int potWidth = NextPowerOfTwo(width);
+        int potHeight = NextPowerOfTwo(height);
+        if (side.Texture == null || side.PotWidth != potWidth || side.PotHeight != potHeight)
+        {
+            if (side.Texture != null)
+            {
+                UnityEngine.Object.Destroy(side.Texture);
+            }
+            side.Texture = new Texture2D(potWidth, potHeight, TextureFormat.RGB24, false);
+            side.Texture.filterMode = FilterMode.Point;
+            side.Texture.wrapMode = TextureWrapMode.Clamp;
+            side.PotWidth = potWidth;
+            side.PotHeight = potHeight;
+        }
+
+        // The worker already padded this buffer to the POT size; the main thread
+        // only uploads it, so no allocation or pad loop happens here.
+        side.Texture.SetPixels32(full);
+        side.Texture.filterMode = FilterMode.Point;
+        side.Texture.wrapMode = TextureWrapMode.Clamp;
+        side.Texture.Apply(false);
+        side.TexWidth = width;
+        side.TexHeight = height;
+
+        if (!s_TexLogged)
+        {
+            s_TexLogged = true;
+            Debug.Log("STRIPTEX limit=" + QualitySettings.masterTextureLimit +
+                " tex=" + side.Texture.width + "x" + side.Texture.height +
+                " region=" + width + "x" + height +
+                " fmt=" + side.Texture.format +
+                " filter=" + side.Texture.filterMode +
+                " mips=" + side.Texture.mipmapCount +
+                " aniso=" + side.Texture.anisoLevel);
+        }
+        Debug.Log("STRIPBUILD " + (side.IsLeft ? "L" : "R") + " " + width + "x" + height +
+            " pot=" + potWidth + "x" + potHeight +
+            " scale=" + side.LastScale.ToString("F3") +
+            " kernel=" + side.LastKernel.ToString("F2") +
+            " ms=" + side.LastMs.ToString("F1"));
+    }
+
+    private static void ApplyToArt(Side side)
+    {
+        if (side.Art == null || side.Filter == null || side.Renderer == null)
+        {
+            return;
+        }
+        if (side.Texture == null)
+        {
+            side.Renderer.enabled = false;
+            return;
+        }
+        Material material = side.Renderer.material;
+        if (material == null || material.shader == null || material.shader != s_Shader)
+        {
+            material = new Material(s_Shader);
+            side.Renderer.material = material;
+        }
+        material.mainTexture = side.Texture;
+        material.mainTextureScale = Vector2.one;
+        material.mainTextureOffset = Vector2.zero;
+        material.color = Color.white;
+        side.Renderer.enabled = true;
+        side.Renderer.castShadows = false;
+        side.Renderer.receiveShadows = false;
+
+        Camera camera = FindCamera(side.Art);
+        if (camera == null)
+        {
+            return;
+        }
+        float left = side.ScreenLeft;
+        float right = side.ScreenRight;
+        float bottom = side.ScreenBottom;
+        float top = side.ScreenTop;
+        float offsetX;
+        float offsetY;
+        GetPixelOffset(out offsetX, out offsetY);
+        left -= offsetX;
+        right -= offsetX;
+        bottom -= offsetY;
+        top -= offsetY;
+        float depth = camera.WorldToScreenPoint(side.Art.position).z;
+        Vector3 bl = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(left, bottom, depth)));
+        Vector3 br = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(right, bottom, depth)));
+        Vector3 tl = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(left, top, depth)));
+        Vector3 tr = side.Art.InverseTransformPoint(camera.ScreenToWorldPoint(new Vector3(right, top, depth)));
+        if (!s_QuadLogged)
+        {
+            s_QuadLogged = true;
+            Debug.Log("STRIPQUAD " + (side.IsLeft ? "L" : "R") +
+                " rect=" + side.ScreenLeft.ToString("F3") + "," + side.ScreenBottom.ToString("F3") + "," +
+                side.ScreenRight.ToString("F3") + "," + side.ScreenTop.ToString("F3") +
+                " off=" + offsetX.ToString("F3") + "," + offsetY.ToString("F3") +
+                " screen=" + Screen.width + "x" + Screen.height +
+                " cam=" + camera.name + " px=" + camera.pixelWidth + "x" + camera.pixelHeight);
+        }
+
+        Mesh mesh = side.Filter.sharedMesh;
+        if (mesh == null || mesh.name != "Port Curtain Quad")
+        {
+            mesh = new Mesh();
+            mesh.name = "Port Curtain Quad";
+            side.Filter.sharedMesh = mesh;
+        }
+        mesh.Clear();
+        mesh.vertices = new Vector3[] { bl, br, tl, tr };
+        float uMax = side.PotWidth > 0 ? (float)side.TexWidth / side.PotWidth : 1f;
+        float vMax = side.PotHeight > 0 ? (float)side.TexHeight / side.PotHeight : 1f;
+        mesh.uv = new Vector2[] {
+            new Vector2(0f, 0f),
+            new Vector2(uMax, 0f),
+            new Vector2(0f, vMax),
+            new Vector2(uMax, vMax)
+        };
+        mesh.triangles = new int[] { 0, 2, 1, 2, 3, 1 };
+        mesh.RecalculateBounds();
+        mesh.RecalculateNormals();
+    }
+
+    private static void Dump(Side side, Color32[] full, int width, int height)
+    {
+        if (!s_StripDump || full == null || width <= 0 || height <= 0 || side.PotWidth <= 0)
+        {
+            return;
+        }
+        string dumpName = (side.IsLeft ? "left" : "right") + "-" + width + "x" + height + ".png";
+        try
+        {
+            Color32[] region = new Color32[width * height];
+            for (int y = 0; y < height; y++)
+            {
+                int from = y * side.PotWidth;
+                int to = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    region[to + x] = full[from + x];
+                }
+            }
+            Texture2D temp = new Texture2D(width, height, TextureFormat.RGB24, false);
+            temp.SetPixels32(region);
+            temp.Apply(false);
+            File.WriteAllBytes(Path.Combine(Path.Combine(Application.dataPath, ".."), dumpName),
+                temp.EncodeToPNG());
+            UnityEngine.Object.Destroy(temp);
+            Debug.Log("STRIPDUMP " + dumpName + " region=" + width + "x" + height +
+                " pot=" + side.PotWidth + "x" + side.PotHeight +
+                " filter=Point screen=" + Screen.width + "x" + Screen.height);
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("STRIPDUMP failed: " + exception);
+        }
+    }
+
+    private static void GetPixelOffset(out float offsetX, out float offsetY)
+    {
+        if (float.IsNaN(s_OffsetX))
+        {
+            bool d3d = SystemInfo.graphicsDeviceVersion.IndexOf("Direct3D") >= 0;
+            // Proven with the test pattern: the explicit ScreenToWorldPoint quad
+            // needs +0.5 px in x and -0.5 px in y on D3D9, and no offset in GL.
+            s_OffsetX = d3d ? 0.5f : 0f;
+            s_OffsetY = d3d ? -0.5f : 0f;
+        }
+        offsetX = s_OffsetX;
+        offsetY = s_OffsetY;
+    }
+
+    private static string NpotSupportText()
+    {
+        System.Reflection.PropertyInfo property = typeof(SystemInfo).GetProperty("npotSupport");
+        if (property == null)
+        {
+            return "n/a";
+        }
+        try
+        {
+            return property.GetValue(null, null).ToString();
+        }
+        catch (Exception)
+        {
+            return "unknown";
+        }
+    }
+
+    private static int NextPowerOfTwo(int value)
+    {
+        int result = 1;
+        while (result < value)
+        {
+            result <<= 1;
+        }
+        return result;
+    }
+
+    private static int Clamp(int value, int min, int max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
     }
 
     private static float Lanczos(float x)
     {
-        if (Mathf.Abs(x) < 0.0001f)
+        float ax = Math.Abs(x);
+        if (ax < 0.0001f)
         {
             return 1f;
         }
-        if (x <= -3f || x >= 3f)
+        if (ax >= 3f)
         {
             return 0f;
         }
-        float px = Mathf.PI * x;
-        return 3f * Mathf.Sin(px) * Mathf.Sin(px / 3f) / (px * px);
+        double px = Math.PI * x;
+        return (float)(3.0 * Math.Sin(px) * Math.Sin(px / 3.0) / (px * px));
     }
 
     private static bool MeasureVisible(
         Transform curtain,
-        out float uMin,
-        out float uMax,
-        out float vTop,
-        out float vBottom,
+        out float screenLeft,
+        out float screenRight,
+        out float screenTop,
+        out float screenBottom,
         out float visibleWidth,
         out float visibleHeight
     )
     {
-        uMin = 0f;
-        uMax = 1f;
-        vTop = 0f;
-        vBottom = 1f;
+        screenLeft = 0f;
+        screenRight = 0f;
+        screenTop = 0f;
+        screenBottom = 0f;
         visibleWidth = 0f;
         visibleHeight = 0f;
-        Camera camera = FindCamera();
+        Camera camera = FindCamera(curtain);
         if (camera == null)
         {
             return false;
@@ -334,34 +1031,40 @@ public static class PortCurtainSkin
         float right = Mathf.Min(Screen.width, Mathf.Max(xAtU0, xAtU1));
         float bottom = Mathf.Max(0f, Mathf.Min(yAtV0, yAtV1));
         float top = Mathf.Min(Screen.height, Mathf.Max(yAtV0, yAtV1));
+        // Snap to whole screen pixels so the strip quad and its texture can be
+        // placed 1:1 with Point filtering at every window size.
+        left = Mathf.Round(left);
+        right = Mathf.Round(right);
+        bottom = Mathf.Round(bottom);
+        top = Mathf.Round(top);
         if (right <= left || top <= bottom)
         {
             return false;
         }
-
-        uMin = Mathf.Clamp01((left - xAtU0) / (xAtU1 - xAtU0));
-        uMax = Mathf.Clamp01((right - xAtU0) / (xAtU1 - xAtU0));
-        if (uMin > uMax)
-        {
-            float swap = uMin;
-            uMin = uMax;
-            uMax = swap;
-        }
-        float vAtTop = (top - yAtV0) / (yAtV1 - yAtV0);
-        float vAtBottom = (bottom - yAtV0) / (yAtV1 - yAtV0);
-        vTop = Mathf.Clamp01(Mathf.Min(vAtTop, vAtBottom));
-        vBottom = Mathf.Clamp01(Mathf.Max(vAtTop, vAtBottom));
-        if (vBottom - vTop < 0.0001f)
-        {
-            return false;
-        }
+        screenLeft = left;
+        screenRight = right;
+        screenTop = top;
+        screenBottom = bottom;
         visibleWidth = right - left;
         visibleHeight = top - bottom;
         return true;
     }
 
-    private static Camera FindCamera()
+    private static Camera FindCamera(Transform curtain)
     {
+        // Use the camera that actually renders the curtain's layer. The side
+        // strips live on the BGCamera, not the 2:3 UICamera.
+        Camera[] cameras = Camera.allCameras;
+        int layerMask = 1 << curtain.gameObject.layer;
+        for (int i = 0; i < cameras.Length; i++)
+        {
+            Camera candidate = cameras[i];
+            if (candidate != null && candidate.enabled && (candidate.cullingMask & layerMask) != 0 &&
+                candidate.targetTexture == null)
+            {
+                return candidate;
+            }
+        }
         UICamera uiCamera = UnityEngine.Object.FindObjectOfType(typeof(UICamera)) as UICamera;
         if (uiCamera != null)
         {
@@ -381,6 +1084,8 @@ public static class PortCurtainSkin
             return;
         }
         s_Loaded = true;
+        s_TestPattern = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_TEST"));
+        s_StripDump = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WA2DC_STRIP_DUMP"));
         string path = Path.Combine(Application.streamingAssetsPath, "bg.png");
         if (!File.Exists(path))
         {
@@ -396,6 +1101,8 @@ public static class PortCurtainSkin
                 return;
             }
             s_Source = texture;
+            s_SourceWidth = texture.width;
+            s_SourceHeight = texture.height;
             Color32[] source = texture.GetPixels32();
             s_Opaque = new Color32[source.Length];
             for (int index = 0; index < source.Length; index++)
