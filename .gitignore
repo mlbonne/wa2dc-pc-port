@@ -16,6 +16,9 @@
 /build/
 /dist/
 /patcher/out/
+/dev/
+/dialoghook/out/
+/scripts/references/
 /scripts/__pycache__/
 # --- Unity editor junk (if a project is ever added) ---
 Library/
@@ -39,3 +42,4 @@ agent-handoff/
 docs/
 tools-added/
 *.md
+!/README.md
