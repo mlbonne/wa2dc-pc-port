@@ -3,7 +3,8 @@
 
 Usage:
     python -I apply_dlc_unlock.py --source <...\\Assets\\Scripts\\Assembly-CSharp> \
-        --items work\\dlc-items.csv --recipe patches\\02-dlc-unlock
+        --items work\\build_all\\generated\\dlc-items.csv \
+        --recipe work\\build_all\\generated\\02-dlc-unlock
 
 The patch is deliberately small and reproducible:
   1. StoreManager.cs becomes `public partial class` and calls UnlockOwnedDlc()
