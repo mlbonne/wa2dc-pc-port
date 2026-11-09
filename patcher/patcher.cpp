@@ -907,8 +907,8 @@ static void SetMuted(bool m)
 }
 
 // ======================================================================= install
-enum Page { P_WELCOME, P_XAPK, P_DEST, P_INSTALL, P_DONE, P_ERROR };
-static int g_page = P_WELCOME;
+enum Page { P_XAPK, P_DEST, P_INSTALL, P_DONE, P_ERROR };
+static int g_page = P_XAPK;
 static wstring g_xapkPath, g_destDir, g_error, g_curFile;
 static wstring g_xapkStatus;
 static bool g_xapkOk;
@@ -1301,7 +1301,7 @@ struct Button { int id; RectF r; wstring label; bool enabled, primary; };
 static vector<Button> g_buttons;
 struct Check { int id; RectF r; wstring label; };
 static vector<Check> g_checks;
-enum { B_START = 1, B_BROWSE_XAPK, B_NEXT, B_BACK, B_BROWSE_DEST, B_INSTALL, B_CANCEL, B_PLAY, B_OPEN, B_SHORTCUT,
+enum { B_BROWSE_XAPK = 1, B_NEXT, B_BACK, B_BROWSE_DEST, B_INSTALL, B_CANCEL, B_PLAY, B_OPEN, B_SHORTCUT,
        B_CLOSE, B_MIN, B_MUSIC, B_RETRY, B_USE_ART, B_USE_1080 };
 
 static void AddButton(int id, float x, float y, float w, float h, const wstring& label, bool enabled = true, bool primary = false)
@@ -1395,31 +1395,20 @@ static void Render(HDC hdc, float dt)
     float x = 54, y = 224;
     Color body(235, 222, 232, 248), dim(200, 170, 190, 220);
     switch (g_page) {
-    case P_WELCOME:
-        Text(g, L"Welcome", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
-        Text(g, L"This builds WA2 Dream Communication for Windows from your\n"
-                L"Android XAPK: the game data and bundles are retargeted, the two\n"
-                L"managed assemblies are patched, and the result is a ready-to-run\n"
-                L"1024x768 game (or 1920x1080 with the optional launcher).\n\n"
-                L"You need the WA2DC 1.0.7 XAPK and about " + FormatSize(TotalBytes() + (256ull << 20)) +
-                L" of free space.\nNothing on your XAPK is changed.",
-             g_sans, 15, FontStyleRegular, body, RectF(x, y + 40, 540, 230));
-        AddButton(B_START, x, 540, 190, 44, L"Begin", true, true);
-        break;
     case P_XAPK:
-        Text(g, L"Where is your XAPK?", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
-        Text(g, L"Choose the WA2 Dream Communication 1.0.7 XAPK you downloaded.", g_sans, 15, FontStyleRegular, body,
+        Text(g, L"Choose the XAPK file.", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
+        Text(g, L"Choose the WA2 Dream Communication 1.0.7 XAPK.", g_sans, 15, FontStyleRegular, body,
              RectF(x, y + 36, 540, 24));
         DrawPathBox(g, x, y + 70, 380, g_xapkPath, L"No XAPK chosen");
         AddButton(B_BROWSE_XAPK, x + 392, y + 70, 120, 36, L"Browse...");
-        Text(g, g_xapkStatus.empty() ? L"The file is identified by its contents, not its name." : g_xapkStatus,
-             g_sans, 14, g_xapkOk ? FontStyleRegular : FontStyleItalic,
-             g_xapkOk ? Color(220, 190, 235, 215) : Color(235, 240, 170, 170), RectF(x, y + 128, 540, 44));
-        AddButton(B_BACK, x, 540, 120, 44, L"Back");
-        AddButton(B_NEXT, x + 136, 540, 190, 44, L"Next", g_xapkOk, true);
+        if (!g_xapkStatus.empty()) {
+            Text(g, g_xapkStatus, g_sans, 14, g_xapkOk ? FontStyleRegular : FontStyleItalic,
+                 g_xapkOk ? Color(220, 190, 235, 215) : Color(235, 240, 170, 170), RectF(x, y + 128, 540, 44));
+        }
+        AddButton(B_NEXT, x, 540, 190, 44, L"Next", g_xapkOk, true);
         break;
     case P_DEST: {
-        Text(g, L"Where should it go?", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
+        Text(g, L"Choose destination folder.", g_serif, 22, FontStyleRegular, Color(255, 200, 220, 250), RectF(x, y, 500, 30));
         Text(g, L"Choose the folder for the Windows game.", g_sans, 15, FontStyleRegular, body, RectF(x, y + 36, 540, 24));
         DrawPathBox(g, x, y + 70, 380, g_destDir, L"No folder chosen");
         AddButton(B_BROWSE_DEST, x + 392, y + 70, 120, 36, L"Browse...");
@@ -1535,7 +1524,6 @@ static void StartInstall()
 static void OnButton(HWND h, int id)
 {
     switch (id) {
-    case B_START: g_page = P_XAPK; break;
     case B_BROWSE_XAPK: {
         wstring p = PickFile(h, L"Choose the WA2DC 1.0.7 XAPK");
         if (!p.empty()) {
@@ -1554,7 +1542,7 @@ static void OnButton(HWND h, int id)
         break;
     }
     case B_NEXT: if (g_xapkOk) g_page = P_DEST; break;
-    case B_BACK: g_page = (g_page == P_DEST) ? P_XAPK : P_WELCOME; break;
+    case B_BACK: if (g_page == P_DEST) g_page = P_XAPK; break;
     case B_BROWSE_DEST: {
         wstring d = PickFolder(h, L"Folder for the WA2DC Windows game", g_destDir);
         if (!d.empty()) {
